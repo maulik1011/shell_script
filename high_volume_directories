@@ -109,7 +109,7 @@ cat hdfs_details |awk -F"/" '{print $NF}'>>tablenames_hdfs
 
 awk 'NR==FNR{a[$0];next} ! ($0 in a)' tablenames_hive tablenames_hdfs >>diff_hive_hdfs
 paste tablenames_hdfs hdfs_details >> temp1
-awk 'FNR==NR{A[$1]=$0;next} ($1 in A){print A[$1]}' temp1 diff_hive_hdfs||sed -e 's/\t/,/g;s/ /,/g'>>output_hdfs.csv
+awk 'FNR==NR{A[$1]=$0;next} ($1 in A){print A[$1]}' temp1 diff_hive_hdfs |sed -e 's/\t/,/g;s/ /,/g'>> output_hdfs.csv
 
 #-----------------------------------------------------------------------------------
 #joining the hive_details(owner,location,createtime) with hdfs_details(size,location)
@@ -118,10 +118,10 @@ awk 'FNR==NR{A[$1]=$0;next} ($1 in A){print A[$1]}' temp1 diff_hive_hdfs||sed -e
 awk 'FNR==NR{A[$2]=$0;next} ($8 in A){print A[$8] FS $1,$2,$3,$4,$5,$6,$7}' hdfs_details hive_details|sort -n -r |sed -e 's/ /#/g4'|sed -e 's/ /,/g'|sed -e 's/#/ /g' >>output_hive.csv
 
 var_no_of_directories=$(cat diff_hive_hdfs|wc -l)
-var_no_of_tables=$(cat output |wc -l)
+var_no_of_tables=$(cat output_hive.csv |wc -l)
 echo " "
-echo "Top $var_no_of_tables tables in term of size are at $var_current_directory/output_hive"
-echo "Top $var_no_of_directories directories in terms of size are at $var_current_directory/output_hdfs"
+echo "Top $var_no_of_tables tables in term of size are at $var_current_directory/output_hive.csv"
+echo "Top $var_no_of_directories directories in terms of size are at $var_current_directory/output_hdfs.csv"
 echo " "
 #-----------------------------------------------------------------------------------
 #Sending the Outputs to the mail_id
@@ -138,3 +138,4 @@ rm -f hive_details
 rm -f tablenames_hdfs
 rm -f hdfs_details
 rm -f temp1
+rm -f diff_hive_hdfs
