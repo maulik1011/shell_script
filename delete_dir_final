@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#Note : one need to replace the line " echo "delete command" " with the delete command
+#Note : one need to replace the line " echo "delete command" " with the hdfs dfs -rmr <hdfs_path>
 ###############################################################################
 ##Script Name : delete_dir.sh
 ##Description :
@@ -11,9 +11,9 @@
 rm -f delete_dir_temp1
 rm -f delete_dir_temp2
 
-echo "Please Enter the Absolute Path of Directory which you want to delete : "
+echo "Please enter the Absolute Path of directory which you want to delete : "
 read directory
-echo "Enter the expected Number of Files inside $directory : "
+echo "Enter the expected number of files to be deleted $directory : "
 read Number
 
 input_validation(){
@@ -26,7 +26,7 @@ input_validation(){
 		fi
 	
 	#validate the number
-	[[ "$2" != ?(+|-)+([0-9]) ]] && echo "$2 is not numeric, Enter a valid number" && exit 1
+	[[ "$2" != ?(+|-)+([0-9]) ]] && echo "$2 is not numeric, Please enter a valid number" && exit 1
 }
 
 print_details(){
