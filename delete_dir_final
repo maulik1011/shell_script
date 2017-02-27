@@ -1,0 +1,104 @@
+#!/bin/bash
+
+#Note : one need to replace the line " echo "delete command" " with the delete command
+###############################################################################
+##Script Name : delete_dir.sh
+##Description :
+##Create Date :
+##Modified date :
+##version : 1.0
+###############################################################################
+rm -f delete_dir_temp1
+rm -f delete_dir_temp2
+
+echo "Please Enter the Absolute Path of Directory which you want to delete : "
+read directory
+echo "Enter the expected Number of Files inside $directory : "
+read Number
+
+input_validation(){
+	#validate the directory
+	hdfs dfs -ls -R $1 >> delete_dir_temp2
+		if [ "$?" -ne 0 ];
+			then
+			echo "--------------------Directory not found-------------------"
+			exit 1
+		fi
+	
+	#validate the number
+	[[ "$2" != ?(+|-)+([0-9]) ]] && echo "$2 is not numeric, Enter a valid number" && exit 1
+}
+
+print_details(){
+	cat delete_dir_temp2 |cut -c 1 >> delete_dir_temp1
+	var_dir=$(cat delete_dir_temp1 |grep d |wc -l)
+	var_file=$(cat delete_dir_temp1 |grep - |wc -l)
+	var_total=$(cat delete_dir_temp1|wc -l)
+	echo "----------------------------------------------------------"
+	echo "There are total : $var_total - items in $directory "
+	echo "  out of which  : $var_dir - directories "
+	echo "                : $var_file -  files"
+	echo "----------------------------------------------------------"
+}
+
+dir_inside_dir_check(){
+	if [ $1 -ne 0 ];
+		then
+		echo ""
+		echo "There are $1 directories inside $directory";
+		echo "---------------Can not delete the directory---------------"
+		exit 1
+	fi
+}
+
+empty_dir_check(){
+	if [ $1 -eq 0 ];
+		then
+		echo "This is an empty directory"
+		delete_dir $Number
+	fi
+}
+
+mismatch_files_check(){
+	if [ $1 -lt $2 ];
+		then
+        echo "There are more files then your expected number of files"
+		view_files $2
+		exit 1
+	elif [ $1 -gt $2 ];
+		then
+        echo "There are less files then your expected number of files"
+		view_files $2
+		exit 1
+	fi
+}
+
+view_files(){
+	echo "Following are the $1 Files "
+	echo "----------------------------------------------------------"
+	cat delete_dir_temp2 |awk -F"/" '{print $NF}'
+	echo "----------------------------------------------------------"
+	echo ""
+}
+
+delete_dir(){
+	view_files $var_file
+	echo "Are you sure you want to delete this files ? (y/n) : "
+	read choice
+	if [ "$choice" = "y" ];
+		then
+		echo "delete command"
+		echo "Deleting the Files"
+		exit 1
+	else
+		echo "---------------Can not delete the directory---------------";
+		exit 1
+	fi
+}
+
+input_validation $directory $Number
+print_details
+dir_inside_dir_check $var_dir
+empty_dir_check $var_file
+mismatch_files_check $Number $var_file
+delete_dir $Number
