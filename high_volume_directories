@@ -126,7 +126,7 @@ echo " "
 #-----------------------------------------------------------------------------------
 #Sending the Outputs to the mail_id
 #-----------------------------------------------------------------------------------
-echo "Please find the attachments for the high volume tables in output_hive and high volume directories (if any) in output_hdfs for the database $database" |mail -s "HDFS space consumption" -a '$var_current_directory/output_hive.csv' -a '$var_current_directory/output_hdfs.csv' $mail_id
+echo "Please find the attachments for the high volume tables in output_hive and high volume directories (if any) in output_hdfs for the database $database" |mail -s "HDFS space consumption" -a 'output_hive.csv' -a 'output_hdfs.csv' $mail_id
 #-----------------------------------------------------------------------------------
 #removing the temp Files
 #-----------------------------------------------------------------------------------
@@ -139,3 +139,6 @@ rm -f tablenames_hdfs
 rm -f hdfs_details
 rm -f temp1
 rm -f diff_hive_hdfs
+
+
+
