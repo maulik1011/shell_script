@@ -82,6 +82,7 @@ fi
 #tablenames_hdfs : extract the table and directory names from hdfs location
 #hdfs_details : size and location of all tables from the hdfs location
 #-----------------------------------------------------------------------------------
+echo "fetching hdfs location and the details from hdfs"
 echo "set hive.cli.errors.ignore=true;">>script_hive_location
 while read line
 	do
@@ -146,7 +147,7 @@ echo " "
 #-----------------------------------------------------------------------------------
 #Sending the Outputs to the mail_id
 #-----------------------------------------------------------------------------------
-echo "Please find the attachments for the high volume tables in output_hive and high volume directories (if any) in output_hdfs for the database $database" |mail -s "HDFS space consumption" -a 'output_hive.csv' -a 'output_hdfs.csv' $mail_id
+echo "Please find the attachments for the top $top high volume tables in output_hive.csv and high volume directories (if any) in output_hdfs.csv for the database $database" |mail -s "HDFS space consumption" -a 'output_hive.csv' -a 'output_hdfs.csv' $mail_id
 #-----------------------------------------------------------------------------------
 #removing the temp Files
 #-----------------------------------------------------------------------------------
