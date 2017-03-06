@@ -4,7 +4,10 @@ echo $var_mail_id
 echo $var_user
 var_today_date=$(date +%d-%m-%Y)
 
-hdfs dfs -ls -R /user/$var_user/.Trash>>"trash-${USER}:$(date +%d-%m-%Y)"
-hdfs dfs -ls /tmp |grep $var_user>>"temp-${USER}:$(date +%Y-%m-%d)"
+hdfs dfs -ls -R /user/$var_user/.Trash>>"trash-${USER}:$(date +%d-%m-%Y).txt"
+hdfs dfs -ls /tmp |grep $var_user>>"temp-${USER}:$(date +%d-%m-%Y).txt"
 
-echo "Please find the attachments for your trash and temp reports of $var_today_date in "trash-${USER}:$(date +%d-%m-%Y).txt" and "temp-${USER}:$(date +%Y-%m-%d).txt" " |mail -s "Trash and Temp Report" -a 'trash-${USER}:$(date +%d-%m-%Y)' -a 'temp-${USER}:$(date +%Y-%m-%d)' $var_mail_id
+echo "Please find the attachments for your trash and temp reports of $var_today_date in "trash-${USER}:$(date +%d-%m-%Y).txt" and "temp-${USER}:$(date +%d-%m-%Y).txt" " |mail -s "Trash and Temp Report" -a ''trash-${USER}:$(date +%d-%m-%Y).txt'' -a ''temp-${USER}:$(date +%d-%m-%Y).txt'' $var_mail_id
+
+rm trash-${USER}:$(date +%d-%m-%Y).txt
+rm temp-${USER}:$(date +%d-%m-%Y).txt
