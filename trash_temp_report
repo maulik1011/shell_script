@@ -1,7 +1,7 @@
 var_mail_id=$1
 var_user=$USER
-echo $var_mail_id
-echo $var_user
+#echo $var_mail_id
+#echo $var_user
 var_today_date=$(date +%d-%m-%Y)
 
 hdfs dfs -ls -R /user/$var_user/.Trash>>"trash-${USER}:$(date +%d-%m-%Y).txt"
