@@ -1,0 +1,24 @@
+Pickle -python concept
+It is used for serializing and de-serializing a Python object.
+Serialization is nothing but converting object into bytes which can be stored on disk
+De-serialization is converting byte stream again back to object.
+Pickle “serializes” the python object (e.g. list, dict etc) before saving it to disk/file. And it contains all the information necessary to reconstruct the object in another python script. 
+Two main methods of pickle:
+1.	dump(object, file) –  dumps an object to a file object
+2.	load (file) - loads an object from a file object.
+Sample program:
+import pickle
+list1 = [‘abc’, ‘xyz’,’pqr’]        //List object
+file_Name = "tempfile"
+file1 = open (file_Name,'wb')     // Open file for writing
+pickle.dump(list1 , file1)             //  Writes list1 in file1
+fileObject.close()                         // Close the file object
+file2= open(file_Name,'r')         //Open file for reading 
+list2 = pickle.load(fileObject)         //Loads file contains in variable list2
+list1 == list2
+True
+Some of the uses of pickling python objects are:
+1) Saving a program's state data to disk so that it can carry on where it left off when restarted (persistence)
+2) Sending python data over a TCP connection in a multi-core or distributed system
+3) Storing python objects in database
+4) Converting an arbitrary python object to a string so that it can be reused elsewhere.
