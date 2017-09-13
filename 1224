@@ -1,0 +1,1644 @@
+#!/bin/ksh
+#***************************************************************************************************#
+# Script Name 	     : edwt1224.ksh
+# Base Script Name   : edwt0233.ksh
+#
+# Title              : Executes File to land workflow for MedHOK CASE feed
+#
+# Description        : Executes file to land workflow for MED D MedHOK CASE feed ,
+#                      Validates the files for below scenarios before load & 
+#                      if it fails the respective file will be rejected with Email notification. 
+#		       				1. CASE NUMBER is NULL or SPACE
+#		       				2. Count mismatch between Data & Trigger file
+#		       				3. Duplicate files in incoming folder 		       
+#
+# Usage              : edwt1224.ksh -j <maestro job nbr> -F <feed_id>
+# Examples           : edwt1224.ksh -j ETMEDHOK01 -F MedHOK_CASE
+#
+# Exit Codes         : 0 = OK; 1 = fatal error
+# Side Effects       : none
+#
+#   Date                 Created by                                   Description
+#***************************************************************************************************#
+# 24-SEP-14                WIPRO  	        This script created for ITPR008774 Enterprise 
+#						                     Med D Data Analytic Solution MedHOK Project.
+# 28-APRIL-2017            WIPRO     Modified the script to include trigger file count check for Zero Byte file. 
+#                                     Also added ABORT_* touch files for reference in new schedule ETHRMEDDCHK
+#***************************************************************************************************#
+
+SCRIPT=`basename $0`
+trap 'echo $SCRIPT: User interruption occurred; exit 1' 2
+
+#*************************************************************************************************##
+# This function is used to display  the usage of the script                          		  ##
+#**************************************************************************************************#
+
+function USAGE
+{
+   print ""
+   print "Usage: ${SCRIPT}  -j <maestro job nbr> -F <feed_id>"
+   print "Examples"
+   print "${SCRIPT} -j 1000 -F ADVC_LIST_VL"
+   print ""
+   exit 1
+}
+
+#***************************************************************************************************#
+##This function is used to set  the options		                           		   ##
+#***************************************************************************************************#
+
+function set_opts
+{
+   while getopts :j:F: opts
+   do
+   case $opts in
+     \?)  USAGE;;
+      j)  export JOB_NBR=$OPTARG;;
+      F)  export FEED_ID=$OPTARG;;
+      *)  print "Invalid option ($opts)"
+	  echo "--  Parameter count = $#"
+   	  echo "--  Parameters:${optstr}"
+          USAGE;;
+   esac
+   done
+   if [[ $# -eq 0 ]]; then
+    print "INVALID OPTIONS"
+    USAGE
+   fi
+   
+   export FEED_ID=`echo $FEED_ID|tr "[[:lower:]]" "[[:upper:]]"`
+}
+
+#***************************************************************************************************#
+##This function is used to validate  the options	                         		   ##
+#***************************************************************************************************#
+
+function validate_opts
+{
+   if [[ ! -n ${FEED_ID} ]] ||
+      [[ ! -n ${JOB_NBR} ]]     
+   then
+      USAGE
+   fi
+
+}
+
+#***************************************************************************************************#
+##This function is used to set the environment variables                         		   ##
+#***************************************************************************************************#
+
+function set_env_vars
+{
+
+   . ~/.profile
+
+  echo "Defining environment variables."
+  . ${EDW_HOME}/scripts/edwt0001.ksh
+  
+  export FEED_DB="${ABC_DB}"
+  export FEED_TAB="V_FEED_MTDAT"
+  export FEED_RUN_TAB="V_FEED_RUN"
+  export MLOAD_UNLOCK_SCRIPT="edwt0106.ksh"
+  export LND_AUDIT_SCRIPT="edwt0029.ksh"
+  export LND_DUP_REM_SCRIPT="edwt0207.ksh"
+  export ARK_DIR=${EDW_ARCH}
+  export EDW_APPLOG=$EDW_LOG/${SCRIPT}.$FEED_ID.$JOB_NBR.$EDW_TIMESTAMP.log
+  echo "-----------------------------------------------------------------"
+  echo "- Starting execution of $SCRIPT at ${EDW_TIMESTAMP}"
+  echo "- Log File: ${EDW_APPLOG}"
+  echo "-----------------------------------------------------------------"  
+  . $EDW_SCRIPTS/edwt0002.ksh
+  . $EDW_SCRIPTS/edwt0013.ksh  
+}
+
+#***************************************************************************************************#
+##This function is used to archive the files		                         		   ##
+#***************************************************************************************************#
+
+function archive_file
+{
+#-----------------------------------------------------------#
+# Archives a file
+#-----------------------------------------------------------#
+  echo "----------------------------------------"
+  echo "Archiving a file"
+  echo "----------------------------------------"
+  if [[ $# != 2 ]]
+  then
+    echo "Need to pass the data file directory and file name as argument to archive_file"
+    return 1
+  fi
+  export src_file_dir=$1
+  export src_file_name=$2
+  if [[ $src_file_name != "N/A" ]]
+  then
+    echo "Archiving $src_file_dir/$src_file_name, will move to $ARK_DIR"
+    echo "mv -f $src_file_dir/$src_file_name $ARK_DIR"
+    mv -f $src_file_dir/$src_file_name $ARK_DIR
+	
+    RETCODE=$?
+    if [[ $RETCODE = 0 ]]
+    then
+      echo "Moved file successfully"    
+    else
+      echo "FAILED TO ARCHIVE FILE"
+      return 2
+    fi
+    echo "Zipping the file $ARK_DIR/$src_file_name"
+    echo "gzip -f $ARK_DIR/$src_file_name"
+    gzip -f $ARK_DIR/$src_file_name
+    RETCODE=$?
+    if [[ $RETCODE = 0 ]]
+    then
+      echo "Zipped file successfully"    
+    else
+      echo "FAILED TO ZIP FILE"
+      return 3
+    fi
+    echo "FILE ARCHIVAL COMPLETE"
+    echo "----------------------------------------"
+  fi  
+  return 0
+}
+    
+#***************************************************************************************************#
+##This function is used to notify the business through mail for errors                  		   ##
+#***************************************************************************************************#
+
+function email_med
+{
+export mail_type=$1
+export filename=$2
+
+
+  feed_id_new=`echo $filename |cut -f1 -d'.'`
+  extract_date=`echo $filename |cut -f2 -d'.'`
+  export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}`
+  export trg_filename_err=${trg_filename_new}.err
+
+if [ $mail_type = "CountMismatch" ]
+then
+export SUBJ="ALERT: ACTION REQUIRED - MEDHOK CASE FEED - COUNT MISMATCH BETWEEN DATA FILE AND TRIGGER FILE"
+
+MSG=`echo " \n Hi Team,
+   	    \n CASE FEED received by EDW IT has Count mismatch between data file and trigger file.
+	    \n FILE NAME:${filename}.err.gz
+	    \n TRIGGER FILE NAME:${trg_filename}.err.gz
+       	    \n ARCHIVAL PATH:$ARK_DIR
+			\n
+	    \n Please investigate the file and check with source/business team to get the proper file.
+	    \n Send an response to DATAWAREHOUSEPRODUCTIONSUPPORT@ABC.com with the corrected file name to ensure the files are re-loaded.
+            \n Note: Please do not respond to this email as this mailbox is not monitored.
+			\n
+            \n Regards
+            \n Data Warehouse Production Support Team`
+
+echo "${MSG} | /bin/mailx -s ${SUBJ} ${EMAIL_LIST}" 
+
+echo "${MSG}" | /bin/mailx -s "${SUBJ}" "${EMAIL_LIST}" 
+
+elif [ $mail_type = "DUPLICATES" ]
+then
+export SUBJ="ALERT: ACTION REQUIRED - MEDHOK CASE FEED - DUPLICATE FILES"
+
+MSG=`echo "\n Team,
+           \n CASE FEED received by EDW IT has duplicate files which has been alredy processed.
+           \n FILE NAME:${filename}.err.gz
+           \n TRIGGER FILE NAME:${trg_filename_err}.gz
+           \n ARCHIVAL PATH:$ARK_DIR
+		   \n
+ 	   \n Please investigate the file and check with source/business team to get the proper file.
+	   \n Send an response to DATAWAREHOUSEPRODUCTIONSUPPORT@ABC.com with the corrected file name to ensure the files are re-loaded.          
+	   \n Note: Please do not respond to this email as this mailbox is not monitored.
+	   \n
+           \n Regards
+           \n Data Warehouse Production Support Team`
+
+echo "${MSG} | /bin/mailx -s ${SUBJ} ${EMAIL_LIST}"
+
+echo "${MSG}" | /bin/mailx -s "${SUBJ}" "${EMAIL_LIST}"
+
+
+elif [ $mail_type = "nullvalues" ]
+then
+export SUBJ="ALERT: ACTION REQUIRED - MEDHOK CASE FEED - CASE NUMBERS ARE NULL"
+
+MSG=`echo "\n Team,
+	   \n CASE FEED received by EDW IT has No CASE NUMBERS in the below file(s).
+	   \n FILE NAME:${filename}.err.gz
+       	   \n TRIGGER FILE NAME:${trg_filename}.err.gz
+	   \n ARCHIVAL PATH:$ARK_DIR
+	   \n
+           \n Please investigate the file and check with source/business team to get the proper file.
+	   \n Send an response to DATAWAREHOUSEPRODUCTIONSUPPORT@ABC.com with the corrected file name to ensure the files are re-loaded.
+           \n Note: Please do not respond to this email as this mailbox is not monitored.
+		   \n
+           \n Regards
+           \n Data Warehouse Production Support Team`
+
+echo "${MSG} | /bin/mailx -s ${SUBJ} ${EMAIL_LIST}" 
+
+echo "${MSG}" | /bin/mailx -s "${SUBJ}" "${EMAIL_LIST}" 
+
+elif [ $mail_type = "ZEROBYTE" ]
+then
+export SUBJ="ALERT: ACTION REQUIRED - MEDHOK CASE FEED - ZERO BYTE FILE"
+
+MSG=`echo "\n Team,
+           \n CASE FEED received by EDW IT is Zero byte, but the trigger file count is not Zero.
+           \n FILE NAME:${filename}.err.gz
+           \n TRIGGER FILE NAME:${trg_filename_err}.gz
+           \n ARCHIVAL PATH:$ARK_DIR
+		   \n
+ 	   \n Please investigate the file and check with source/business team to get the proper file.
+	   \n Send an response to DATAWAREHOUSEPRODUCTIONSUPPORT@ABC.com with the corrected file name to ensure the files are re-loaded.          
+	   \n Note: Please do not respond to this email as this mailbox is not monitored.
+	   \n
+           \n Regards
+           \n Data Warehouse Production Support Team`
+
+echo "${MSG} | /bin/mailx -s ${SUBJ} ${EMAIL_LIST}"
+
+echo "${MSG}" | /bin/mailx -s "${SUBJ}" "${EMAIL_LIST}"
+
+fi
+}
+
+#***************************************************************************************************#
+##This function is used to archive erroneous files		                  		   ##
+#***************************************************************************************************#
+
+function archive_file_err
+{
+#-----------------------------------------------------------#
+# Archives a file
+#-----------------------------------------------------------#
+  echo "----------------------------------------"
+  echo "Archiving a file"
+  echo "----------------------------------------"
+  if [[ $# != 2 ]]
+  then
+    echo "Need to pass the data file directory and file name as argument to archive_file"
+    return 1
+  fi
+  export src_file_dir=$1
+  export src_file_name=$2
+   feed_id_new=`echo $src_file_name |cut -f1 -d'.'`
+  extract_date=`echo $src_file_name |cut -f2 -d'.'`
+  echo "src_file name is $src_file_name"
+  export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}` 
+  export trg_filename_err=${trg_filename_new}.err
+if [[ $src_file_name != "N/A" ]]
+  then
+    echo "Archiving $src_file_dir/$src_file_name, will move to $ARK_DIR"
+    echo "mv -f $src_file_dir/$src_file_name $ARK_DIR"
+    src_file_name_err=${src_file_name}.err
+    mv -f $src_file_dir/$src_file_name $ARK_DIR/$src_file_name_err
+
+    RETCODE=$?
+    if [[ $RETCODE = 0 ]]
+
+    then
+      echo "Moved file successfully"
+    else
+      echo "FAILED TO ARCHIVE FILE"
+      return 2
+    fi
+    echo "Zipping the file $ARK_DIR/$src_file_name"
+    echo "gzip -f $ARK_DIR/$src_file_name_err"
+    gzip -f $ARK_DIR/$src_file_name_err
+    RETCODE=$?
+    if [[ $RETCODE = 0 ]]
+    then
+      echo "Zipped file successfully"
+    else
+      echo "FAILED TO ZIP FILE"
+      return 3
+    fi
+    echo "FILE ARCHIVAL COMPLETED"
+    echo "----------------------------------------"
+ fi
+  return 0
+}
+
+#***************************************************************************************************#
+##This function is used to check for duplicate files		                  		   ##
+#***************************************************************************************************#
+  
+function dups_chck_files
+{
+  cd $data_file_dir
+  export list_command="ls -1tr $data_file_format"
+  export list_command1="ls -1tr $data_file_format" 
+for i in `eval $list_command|egrep -v "TRIGGER|TCH"| tr "\n" " " |cut -f1- -d " " 2> /dev/null`; do
+    sum1=`find $i -type f -name "*MEDHOK_CASE_MBR*" -exec md5sum '{}' \;`
+ export sum11=`echo $sum1|cut -f1 -d " "`  
+echo $sum11
+echo "Checking for the file $i and list cmd is $list_command"
+  echo "j loop"
+ echo "list_command in jloop $list_command|egrep -v $i" 
+for j in `eval $list_command|egrep -v $i"|TRIGGER|TCH" 2> /dev/null`; do
+
+   echo "matching with file $j and list cmd is $list_command1"     
+  sum2=`find $j -type f -name "*MEDHOK_CASE_MBR*" -exec md5sum '{}' \;`
+ export sum22=`echo $sum2|cut -f1 -d " "`
+echo $sum22
+
+
+echo " for files $i and $j sums are $sum1 and $sum2"  
+     if test $sum11==$sum22 ; then
+ echo "Received a duplicate file $j and It will be archived"
+
+ archive_file_err $data_file_dir $j
+  email_med DUPLICATES $j
+ fi
+   done
+done
+}
+
+#***************************************************************************************************#
+##This function is used to check for duplicate erroneous files		              		   ##
+#***************************************************************************************************#
+
+function dups_file_err1
+{
+cd $data_file_dir
+#cksum  *MEDHOK_CASE_MBR* | sort -n > $data_file_dir/filelist_MBR_CASE
+cksum  `ls -ltr *MEDHOK_CASE* |egrep -v "TRIGGER|TCH"` 2>/dev/null | sort -n > filelist_MBR_CASE
+
+old=""
+while read sum lines filename
+do
+      if [[ "$sum" != "$old" ]] ; then
+            old="$sum"
+            continue
+      fi
+
+echo "received a duplicate file $filename and it will archived here "	  
+
+feed_id_new=`echo $filename |cut -f1 -d'.'`
+extract_date=`echo $filename |cut -f2 -d'.'`
+export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}`
+
+archive_file_err $data_file_dir $filename
+archive_file_err $data_file_dir $trg_filename_new
+archive_file_err $data_file_dir ${feed_id_new}.TCH 
+
+email_med DUPLICATES $filename
+
+done < filelist_MBR_CASE
+}
+
+#***************************************************************************************************#
+##This function is used to release the mload				              		   ##
+#***************************************************************************************************#
+
+function release_mload_lock
+{
+#-----------------------------------------------------------#
+# Release m-load lock on landing table
+#-----------------------------------------------------------#  
+  echo "----------------------------------------"
+  echo "Executing mload unlock script, this will release a m-lock if present..."
+  echo "----------------------------------------"
+  echo "Calling $EDW_HOME/scripts/$MLOAD_UNLOCK_SCRIPT -t $landing_view_nm -d $LANDING_DB -m"
+
+ $EDW_HOME/scripts/$MLOAD_UNLOCK_SCRIPT -t $landing_view_nm -d $LANDING_DB -m
+  export RETCODE=$?
+  echo "----------------------------------------"
+  return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to truncate the landing table			              		   ##
+#***************************************************************************************************#
+
+function truncate_landing_table
+{
+#-----------------------------------------------------------#
+# Truncates the landing table
+#-----------------------------------------------------------#  
+  echo "----------------------------------------"
+  echo "Truncating the landing table before executing data loads..."
+  echo "----------------------------------------"
+  run_sql="DELETE FROM $LANDING_DB.$landing_view_nm ALL"
+  error_msg="Error truncating $LANDING_DB.$landing_view_nm"
+  success_msg="Truncated $LANDING_DB.$landing_view_nm successfully"
+  EXEC_APPLN_SQL "${run_sql}" "${error_msg}" "${success_msg}"
+  export RETCODE=$?
+  echo "----------------------------------------"
+  return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to get the feed details				              		   ##
+#***************************************************************************************************#
+
+function get_and_check_feed_info
+#-----------------------------------------------------------#
+# Gets the information from T_FEED_MTDAT for passed FEED_ID
+#-----------------------------------------------------------#
+{
+  echo "----------------------------------------"
+  echo "Fetching metadata information for feed..."
+  echo "----------------------------------------"
+  fetch_sql="SELECT \
+  COALESCE(WRPR.WRPR_GID,-1) FEED_WRPR, \
+  COALESCE(PRCS_GRP.PRCS_GRP_GID,-1) PRCS_GRP,\
+  COALESCE(PRCS_GRP.WRPR_GID,-1) PRCS_GRP_WRPR,\
+  CASE \
+  WHEN FEED_WRPR = -1 THEN 'N/A'\
+  WHEN PRCS_GRP_WRPR = -1 THEN 'N/A'\
+  WHEN FEED_WRPR = PRCS_GRP_WRPR THEN 'Y'\
+ ELSE 'N'\
+  END WRPR_GID_MATCH,\
+  HDR_REC_SENT_IND,\
+  TRL_REC_SENT_IND,\
+  DAT_FILE_DIR_NM,\
+  DAT_FIL_NM_FRMT_TX,\
+  LBRY_SCRPT_NM,\
+  LNDNG_TBL_NM,\
+  LNDNG_VW_NM,\
+  PRCS_DUP_RECS_IND,\
+  COALESCE(WRPR_NM,'NOT_FOUND'),\
+  COALESCE(PRCS_GRP_NM,'NOT_FOUND'),\
+  COALESCE(OVRD_CNT_MTCH_IND,'N'),\
+  COALESCE(FILE_TYP_CD,'U'),\
+  COALESCE(TRIG_FILE_SENT_IND,'N')\
+  FROM ${FEED_DB}.$FEED_TAB FEED\
+  LEFT OUTER JOIN\
+  ${ABC_DB}.V_WRPR WRPR\
+  ON FEED.WRPR_GID=WRPR.WRPR_GID\
+  LEFT OUTER JOIN\
+  ${ABC_DB}.V_PRCS_GRP PRCS_GRP\
+  ON FEED.PRCS_GRP_GID=PRCS_GRP.PRCS_GRP_GID\
+  WHERE upper(FEED_ID) = '${FEED_ID}'
+  AND WRPR.ACTV_IND = 'Y' "
+  error_msg="Error fetching information for $FEED_ID from ${FEED_DB}.$FEED_TAB"
+  FETCH_APPLN_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export RETCODE=$?
+  if [[ $RETCODE = 0 ]] then
+    WRAPPER_GID="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+    PRCS_GRP_GID="`echo ${fetch_rslt}|cut -f2 -d'~'`"
+    WRPR_GID_PRCS_GRP="`echo ${fetch_rslt}|cut -f3 -d'~'`"
+    WRPR_GID_MATCH_FLG="`echo ${fetch_rslt}|cut -f4 -d'~'`"
+    header_sent="`echo ${fetch_rslt}|cut -f5 -d'~'`"
+    trailer_sent="`echo ${fetch_rslt}|cut -f6 -d'~'`"
+    data_file_dir="`echo ${fetch_rslt}|cut -f7 -d'~'`"
+    data_file_format="`echo ${fetch_rslt}|cut -f8 -d'~'`"
+    library_script_nm="`echo ${fetch_rslt}|cut -f9 -d'~'`"
+    landing_tab_nm="`echo ${fetch_rslt}|cut -f10 -d'~'`"
+    landing_view_nm="`echo ${fetch_rslt}|cut -f11 -d'~'`"
+    call_dup_prcs="`echo ${fetch_rslt}|cut -f12 -d'~'`"
+    WRAPPER_NM="`echo ${fetch_rslt}|cut -f13 -d'~'`"
+    PRCS_GRP_NM="`echo ${fetch_rslt}|cut -f14 -d'~'`"
+    skip_match_flg="`echo ${fetch_rslt}|cut -f15 -d'~'`"
+    file_typ_cd="`echo ${fetch_rslt}|cut -f16 -d'~'`"
+    trg_file_sent_ind="`echo ${fetch_rslt}|cut -f17 -d'~'`"
+    export WRAPPER_GID=`STR_TRIM ${WRAPPER_GID}`
+    export PRCS_GRP_GID=`STR_TRIM ${PRCS_GRP_GID}`
+    export WRPR_GID_PRCS_GRP=`STR_TRIM ${WRPR_GID_PRCS_GRP}`
+    export WRPR_GID_MATCH_FLG=`STR_TRIM ${WRPR_GID_MATCH_FLG}`
+    export header_sent=`STR_TRIM ${header_sent}` 
+    export trailer_sent=`STR_TRIM ${trailer_sent}`
+    export data_file_dir=`STR_TRIM ${data_file_dir}`
+    export data_file_format=$data_file_format
+    export library_script_nm=`STR_TRIM ${library_script_nm}`
+    export landing_tab_nm=`STR_TRIM ${landing_tab_nm}`
+    export landing_view_nm=`STR_TRIM ${landing_view_nm}`
+    export call_dup_prcs=`STR_TRIM ${call_dup_prcs}`
+    export WRAPPER_NM=`STR_TRIM ${WRAPPER_NM}`
+    export PRCS_GRP_NM=`STR_TRIM ${PRCS_GRP_NM}`     
+    
+    #### Added this ####
+    export skip_match_flg=`STR_TRIM ${skip_match_flg}`  
+    export file_typ_cd=`STR_TRIM ${file_typ_cd}`
+    export trg_file_sent_ind=`STR_TRIM ${trg_file_sent_ind}`
+    ####################
+    
+    if [[ $file_typ_cd == "X" ]] || [[ $file_typ_cd == "x" ]]
+    then
+      fetch_sql="SELECT L.PARM_VAL_TXT \
+      FROM $ABC_DB.V_PARM P \
+      INNER JOIN $ABC_DB.V_PARM_LIST L \
+      ON P.PARM_GID = L.PARM_GID
+      WHERE 
+            P.WRPR_GID = ${WRAPPER_GID} \
+      AND   P.PRSC_GRP_GID IS NULL \
+      AND   P.PRSC_GID IS NULL \
+      AND   P.PARM_NM = 'TGT_TBL_LST'
+      "
+      FETCH_APPLN_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED MULTIPLE
+      export tgt_tab_list="`echo ${fetch_rslt}`"
+    fi  
+   
+    ####
+    
+    echo "---------------------------------------------------------------------------"
+    echo "INFORMATION FOR FEED_ID: $FEED_ID PRESENT IN ${FEED_DB}.$FEED_TAB          "
+    echo "---------------------------------------------------------------------------"
+    echo "Wrapper Gid in ${FEED_DB}.$FEED_TAB              : $WRAPPER_GID            "
+    echo "Process group Gid in ${FEED_DB}.$FEED_TAB        : $PRCS_GRP_GID           "
+    echo "Wrapper name in ${ABC_DB}.V_WRPR                 : $WRAPPER_NM             "
+    echo "Process group name in ${ABC_DB}.V_PRCS_GRP       : $PRCS_GRP_NM            "
+    echo "Header record sent (Y/N)                         : $header_sent            "
+    echo "Trailer record sent(Y/N)                         : $trailer_sent           "
+    echo "Data file directory                              : $data_file_dir          "
+    echo "Data file format                                 : $data_file_format       "
+    echo "Library script name                              : $library_script_nm      "
+    echo "Landing table name                               : $landing_tab_nm         "
+    echo "Landing view name                                : $landing_view_nm        "
+    #### Added this ################
+    echo "Skip record count match                          : $skip_match_flg         "
+    echo "---------------------------------------------------------------------------"
+    ################################
+    echo "CHECKING THE FEED INFORMATION ...                                          "
+    echo "---------------------------------------------------------------------------"
+    error=N
+    if [[ $WRAPPER_GID == -1 ]] || [[ $PRCS_GRP_GID == -1 ]]
+    then
+      echo "\nThe feed entry in ${FEED_DB}.$FEED_TAB for $FEED_ID is not related to valid wrapper or process group in $ABC_DB.V_WRPR or $ABC_DB.V_PRCS_GRP"
+      echo "Please update the entries in ${FEED_DB}.$FEED_TAB for $FEED_ID to valid entries in $ABC_DB.V_WRPR or $ABC_DB.V_PRCS_GRP"
+      error=Y
+    else
+      echo "The feed entry in ${FEED_DB}.$FEED_TAB for $FEED_ID has valid values for WRPR_GID and PRCS_GRP_GID"
+    fi
+    if [[ $WRPR_GID_MATCH_FLG == "N" ]]
+    then
+      echo "\nThe process group in ${FEED_DB}.$FEED_TAB for $FEED_ID is NOT related to the wrapper in ${FEED_DB}.$FEED_TAB in the ABC tables $ABC_DB.V_WRPR and $ABC_DB.V_PRCS_GRP"
+      echo "Please update the entry in ${FEED_DB}.$FEED_TAB for $FEED_ID to match correctly"
+      error=Y
+    elif [[ $WRPR_GID_MATCH_FLG == "Y" ]]
+    then
+      echo "\nThe process group in ${FEED_DB}.$FEED_TAB for $FEED_ID is related to the wrapper in ${FEED_DB}.$FEED_TAB in the ABC tables $ABC_DB.V_WRPR and $ABC_DB.V_PRCS_GRP"
+    fi    
+    if [[ ! -d $data_file_dir ]]
+    then
+      echo "\nThe data file directory $data_file_dir for the feed is NOT a directory!"
+      error=Y
+    else
+      echo "\nThe data file directory $data_file_dir is valid"
+    fi
+    test_data_file_fmt=`STR_TRIM $data_file_format`
+    if [[ ! -n "${test_data_file_fmt}" ]]
+    then
+      echo "\nThe value for data_file_format for feed_id=$FEED_ID is either an empty string or spaces"
+      echo "This needs to be set as a valid regular expression, it can also contain pipes and grep commands, script wont execute ..."
+      error=Y
+    fi
+    if [[ ! -n "${library_script_nm}" ]]
+    then
+      echo "\nThe value for the library script cannot be blank or spaces, please reset in the ${FEED_DB}.$FEED_TAB for ${FEED_ID}"
+      echo "exiting ..."
+      error=Y
+    else
+      if [[ ! -s $EDW_SCRIPTS/$library_script_nm ]]
+      then
+        echo "\nThe library script $library_script_nm is either not present in $EDW_SCRIPTS or is empty!"
+        error=Y
+      else
+        echo "\nThe library script $EDW_SCRIPTS/$library_script_nm exists"
+      fi  
+    fi
+    
+    if [[ $file_type_cd == "U" ]] then
+      echo "\nThe file type code needs to be any one of A, E or X"
+      error=Y
+    fi
+
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$EMAIL_LIST'"
+  error_msg="Error fetching parameter EMAIL_LIST from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export EMAIL_LIST=`STR_TRIM ${fetch_rslt}`
+
+  echo "EMAIL_LIST  is ${EMAIL_LIST}"
+	
+						
+	fetch_sql="SELECT parm_val_txt \
+                       FROM DWV_ABC.V_PARM \
+                      WHERE wrpr_gid =${WRAPPER_GID} \
+                        AND prcs_grp_gid=${PRCS_GRP_GID} \
+                        AND parm_nm = '$\$DB_LND'"
+
+   error_msg="Error in fetching the parm_val_txt from V_PARM .Please verify."
+   FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+   export LANDING_DB=`STR_TRIM "${fetch_rslt}"`
+   
+ 
+  echo "LANDING_DB is ${LANDING_DB}"
+   
+   fetch_sql="SELECT parm_val_txt \
+                       FROM DWV_ABC.V_PARM \
+                      WHERE wrpr_gid =${WRAPPER_GID} \
+                        AND prcs_grp_gid=${PRCS_GRP_GID} \
+                        AND parm_nm = '$\$DB_LND_TBL'"
+
+   error_msg="Error in fetching the parm_val_txt from V_PARM .Please verify."
+   FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+   export LANDING_TAB_DB=`STR_TRIM "${fetch_rslt}"`
+
+    export fetch_sql="SELECT count(1) FROM DBC.TABLES WHERE TABLENAME='${landing_tab_nm}' AND DATABASENAME='${LANDING_TAB_DB}'"
+    error_msg="Error checking if landing table ${LANDING_TAB_DB}.${landing_tab_nm} exists"
+    FETCH_APPLN_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+    export RETCODE=$?
+    if [[ $RETCODE == 0 ]]
+    then
+      count="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+      count=`STR_TRIM ${count}`
+      if [[ $count == 1 ]]
+      then
+        echo "\n${LANDING_TAB_DB}.${landing_tab_nm} exists"
+      elif [[ $count == 0 ]]
+      then
+        echo "\n${LANDING_TAB_DB}.${landing_tab_nm} DOES NOT EXIST"
+        error=Y
+      fi
+    fi
+
+    export fetch_sql="SELECT count(1) FROM DBC.TABLES WHERE TABLENAME='${landing_view_nm}' AND DATABASENAME='${LANDING_DB}'"
+    error_msg="Error checking if landing table ${LANDING_DB}.${landing_view_nm} exists"
+    FETCH_APPLN_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+    export RETCODE=$?
+    if [[ $RETCODE == 0 ]]
+    then
+      count="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+      count=`STR_TRIM ${count}`
+      if [[ $count == 1 ]]
+      then
+        echo "\n${LANDING_DB}.${landing_view_nm} exists"
+      elif [[ $count == 0 ]]
+      then
+        echo "\n${LANDING_DB}.${landing_view_nm} DOES NOT EXIST"
+        error=Y
+      fi
+    fi
+  else
+    error=Y
+  fi 
+  echo "---------------------------------------------------------------------"    
+  if [[ $error == "Y" ]]
+  then
+    return 1
+  else
+    return 0
+  fi  
+}
+
+#***************************************************************************************************#
+##This function is used to get the prcs details				              		   ##
+#***************************************************************************************************#
+
+function get_prcs_gid
+{
+  #----------------------------------------------------------------------------------#
+  # This function gets the PRCS_GID for the file to landing session related 
+  # to file to landing process group
+  #----------------------------------------------------------------------------------#
+  echo "---------------------------------------------------------------------"
+  echo "GETTING THE PRCS_GID FROM $prcs_gid_list"
+  echo "---------------------------------------------------------------------"
+  if [[ ! -s ${prcs_gid_list} ]] 
+  then
+    echo "THE FILE FOR QUERYING GIDS IS NOT PRESENT OR IS EMPTY!!!"
+    return 1
+  fi
+  PRCS_GID=`cat $prcs_gid_list|cut -f1 -d ":"|cut -f2 -d "~"`
+  echo "PRCS_GID is: $PRCS_GID"
+  echo "---------------------------------------------------------------------"
+  return 0
+}
+
+#***************************************************************************************************#
+##This function is used to check if the file has been loaded before              		   ##
+#***************************************************************************************************#
+
+function has_file_been_loaded_before
+{
+  #---------------------------------------------------------------------------------------#
+  # Checks to see if a file has been loaded before and prevents it from being loaded again
+  #---------------------------------------------------------------------------------------#
+  echo "---------------------------------------------------------------------"
+  echo "CHECKING TO SEE IF A FILE HAS BEEN LOADED BEFORE"
+  echo "---------------------------------------------------------------------"
+  search_md5="$1"
+  fetch_sql="SELECT\
+	FR.WRPR_RUN_GID,\
+	WR.WRPR_STUS_TXT,\
+	FR.PRCS_GRP_RUN_GID,\
+	FR.PRCS_RUN_GID,\
+	FR.DATA_FILE_NM,\
+	FR.TRG_FIL_NM,\
+	FR.HASH_MD5,\
+	FR.REC_ADD_TS\
+	FROM\
+	(\
+	SELECT\
+	 WRPR_RUN_GID,\
+	 PRCS_GRP_RUN_GID,\
+	 PRCS_RUN_GID,\
+	 DATA_FILE_NM,\
+	 TRG_FIL_NM,\
+	 HASH_MD5,\
+	 REC_ADD_TS\
+	FROM \
+	${FEED_DB}.${FEED_RUN_TAB}\
+	WHERE\
+	FEED_ID='${FEED_ID}'\
+	AND HASH_MD5='${search_md5}' \
+	) FR\
+	INNER JOIN\
+	${ABC_DB}.V_WRPR_RUN WR\
+	ON FR.WRPR_RUN_GID=WR.WRPR_RUN_GID
+	WHERE WR.WRPR_STUS_TXT IN ('S','R')"
+  error_msg="Error fetching information for $FEED_ID from ${FEED_DB}.${FEED_RUN_TAB}"
+  FETCH_APPLN_DATA "${fetch_sql}" "${error_msg}"
+  export RETCODE=$?
+  if [[ $RETCODE = 0 ]] then
+    if [[ -n ${fetch_rslt} ]] then
+      prev_wrpr_run_gid="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+      prev_wrpr_stus_txt="`echo ${fetch_rslt}|cut -f2 -d'~'`"
+      prev_prcs_grp_run_gid="`echo ${fetch_rslt}|cut -f3 -d'~'`"
+      prev_prcs_run_gid="`echo ${fetch_rslt}|cut -f4 -d'~'`"
+      prev_data_file_nm="`echo ${fetch_rslt}|cut -f5 -d'~'`"
+      prev_trg_file_nm="`echo ${fetch_rslt}|cut -f6 -d'~'`"
+      prev_hash_md5="`echo ${fetch_rslt}|cut -f7 -d'~'`"
+      prev_rec_add_ts="`echo ${fetch_rslt}|cut -f8 -d'~'`"      
+      prev_wrpr_run_gid=`STR_TRIM $prev_wrpr_run_gid`
+      prev_wrpr_stus_txt=`STR_TRIM $prev_wrpr_stus_txt`
+      prev_prcs_grp_run_gid=`STR_TRIM $prev_prcs_grp_run_gid`
+      prev_prcs_run_gid=`STR_TRIM $prev_prcs_run_gid`
+      prev_data_file_nm=`STR_TRIM $prev_data_file_nm`
+      prev_trg_file_nm=`STR_TRIM $prev_trg_file_nm`
+      prev_hash_md5=`STR_TRIM $prev_hash_md5`
+      prev_rec_add_ts=`STR_TRIM $prev_rec_add_ts`
+      
+      if [[ "$prev_wrpr_stus_txt" == "S" ]]
+      then
+        echo "FILE PROCESSED BEFORE SUCCESSFULLY"
+        loaded_before="Y"      
+      elif [[ "$prev_wrpr_stus_txt" == "R" ]] 
+      then
+        if [[ $prev_wrpr_run_gid == $WRPR_RUN_GID ]] then
+          echo "CURRENT FILE IS A DUPLICATE OF ANOTHER FILE IN TODAYS LIST, THIS FILE WILL BE SKIPPED"
+          loaded_before="Y"      
+        else
+          echo "The previous time this file or a file with the same data was loaded the wrapper run was incomplete for some reason ..."
+          echo "CONSIDERING THIS FILE WAS NOT LOADED AND PROCESSING ..."
+          loaded_before="N"      
+        fi  
+      fi
+      
+      echo "-----------------------------------"
+      echo "Details"
+      echo "-----------------------------------"
+      echo "WRPR_RUN_GID          :$prev_wrpr_run_gid                 "
+      echo "PRCS_GRP_RUN_GID      :$prev_prcs_grp_run_gid             "
+      echo "PRCS_RUN_GID          :$prev_prcs_run_gid                 "
+      echo "DATA_FILE_NM          :$prev_data_file_nm                 "
+      echo "TRG_FIL_NM            :$prev_trg_file_nm                  " 
+      echo "HASH_MD5              :$prev_hash_md5                     "
+      echo "REC_ADD_TS            :$prev_rec_add_ts                   "
+      echo "------------------------------------"
+    else
+      loaded_before="N"
+      echo "FILE NOT PROCESSED BEFORE SUCCESSFULLY"
+    fi    
+  else
+    echo "ERROR while checking to see if a file has been loaded successfully before."
+  fi
+  
+  return $RETCODE
+  echo "---------------------------------------------------------------------"
+}
+
+#***************************************************************************************************#
+##This function is used to get the file list to be loaded		             		   ##
+#***************************************************************************************************#
+
+function build_file_list
+{
+  #----------------------------------------------------------------------------------#
+  # Builds the list of files and for each stores file audit information in ABC tables
+  # Also performs the record count audit on trigger and data file if applicable using
+  # library script function 
+  #----------------------------------------------------------------------------------#
+  # STEPS
+  #----------------------------------------------------------------------------------#
+  # 1. Importing the library/file audit script
+  # 2. Build a list of files to be processed and for each file do steps below
+  # 3. Derive the trigger file name
+  # 4. Check if file is zero size, if so don't add to file list for processing and
+  #    archive the data file and associated trigger file
+  # 5. Derive the file MD5 value
+  # 6. If file is non zero size check if it has been loaded before using MD5 created in step 5
+  # 7. If file was processed before successfully then archive the data file and trigger file and 
+  #    skip the remaining steps and move to next file
+  # 8. Insert file information into T_FEED_RUN
+  # 9. Perform file audit on the file using the library/file audit script loaded in step 1
+  #10. If file audit was successful then move on to next file
+  #    else exit with non zero error code
+  #----------------------------------------------------------------------------------#
+  
+  echo "----------------------------------------"
+  echo "Starting to build the file list"
+  echo "----------------------------------------"
+  echo "Importing the library script ..."
+  . $EDW_SCRIPTS/$library_script_nm
+  RETCODE=$?
+  if [[ $RETCODE = 0 ]]
+  	then
+    		echo "\nImported $EDW_SCRIPTS/$library_script_nm successfully"
+  	else
+    		echo "\nError importing $EDW_SCRIPTS/$library_script_nm !"
+  fi
+  export file_list="$EDW_TMP/$SCRIPT.$WRAPPER_NM.$JOB_NBR.$FEED_ID.lst"
+  echo "\nBuilding the file list, file names will be stored in $file_list"
+  export RETCODE=0
+  > $file_list
+  RETCODE=$?
+  if [[ $RETCODE != 0 ]]
+  	then
+   		echo "\nCouldn't create $file_list!"
+    		return 1
+  fi
+  cd $data_file_dir
+  export list_command="ls -1tr $data_file_format"
+  files_exist=N
+  for filename in `eval $list_command 2> /dev/null`
+  do
+	   files_exist=Y
+	   echo "\nProcessing $filename"
+		   if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+			   then
+			     echo "\nDeriving trigger file name"
+			     PARSE_FILENAME $filename
+			     echo "Trigger file name: $trg_filename"     
+			   else
+			     echo "Trigger file name is set to blank since TRG_FILE_SENT_IND = 'N' for this feed"
+			     trg_filename="Not sent by source system for this feed per design"
+		   fi
+		   if [[ ! -s $filename ]]
+			   then
+			     #echo "\nFile $data_file_dir/$filename is zero size, this file wont be loaded ..."
+			     export zero_byte_file=Y     
+			   else
+			     export zero_byte_file=N     
+		   fi  
+	   echo "\nDeriving file MD5"
+	   file_md5="`md5sum $filename|cut -f1 -d ' '`" 
+	   export RETCODE=$?
+		   if [[ $RETCODE != 0 ]] || [[ $file_md5 == "" ]] 
+			   then
+			     return 1
+		   fi
+	   #---THE SECTION BELOW CHECKS IF A FILE HAS BEEN LOADED BEFORE ---#
+	   #---THE CHECK IS ONLY PERFORMED IF THE FILE HAS SIZE > 0 --------#
+	   if [[ $zero_byte_file == "N" ]]
+	   then
+		     has_file_been_loaded_before $file_md5 
+		     export RETCODE=$?
+			     if [[ $RETCODE != 0 ]] 
+			     then
+			       return $RETCODE
+			     fi
+				     if [[ $loaded_before == "Y" ]]
+				     then
+				       echo "\nFile $filename has been already been loaded, skipping this file ..."  
+				       archive_file $data_file_dir $filename
+				       RETCODE=$?
+					       if [[ $RETCODE != 0 ]]
+					       then
+						 echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+						 RETCODE=0
+					       fi
+						       if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+							 then
+							 archive_file $data_file_dir $trg_filename
+							 RETCODE=$?
+							 if [[ $RETCODE != 0 ]]
+							 then
+							   echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+							   RETCODE=0
+							 fi
+						       fi  
+
+				     continue
+				    fi
+	   fi  
+
+	   echo "\nInserting into T_FEED_RUN"
+        
+        INSERT_INTO_FEED_RUN "$FEED_ID" "$filename" "$trg_filename" "$file_md5" #--test
+	export RETCODE=$?
+	if [[ $RETCODE != 0 ]] 
+	then
+	  return $RETCODE
+	fi
+	   echo "\nGetting feed run gid"
+	   echo "$FEED_ID $filename"
+	   GET_FEED_RUN_GID $FEED_ID $filename #--test
+	   echo "$FEED_RUN_GID"
+	   export RETCODE=$?
+	   if [[ $RETCODE != 0 ]] 
+		   then
+		     return $RETCODE
+	   fi
+	   echo "\nCalling process to perform file audit"
+	   echo "Calling FILE_AUDIT $FEED_ID $data_file_dir $filename $FEED_RUN_GID"
+	   FILE_AUDIT $FEED_ID $data_file_dir $filename $FEED_RUN_GID  
+	   export RETCODE=$?
+	   if [[ $RETCODE != 0 ]] 
+		   then
+		     echo "\nFILE AUDIT FAILED FOR $filename"
+		     return $RETCODE
+	   fi
+
+	   if [[ $zero_byte_file == "Y" ]]
+	   then
+	     archive_file $data_file_dir $filename
+	     RETCODE=$?
+	     if [[ $RETCODE != 0 ]]
+	     then
+	       echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+	     fi
+	     if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+	     then
+	       archive_file $data_file_dir $trg_filename
+               RETCODE=$? 	     
+	     fi
+	     if [[ $RETCODE != 0 ]]
+	     then
+	       echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+	     fi
+	   else
+	     if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+	     then
+	       echo "$filename~$trg_filename~$FEED_RUN_GID" >> $file_list	       
+	     else 
+	       echo "$filename~NOT_SENT_PER_DESIGN~$FEED_RUN_GID" >> $file_list
+	     fi
+	   fi  
+  done
+  
+  if [[ $files_exist == "N" ]]
+	  then
+	    echo "\nNO FILES PRESENT FOR PROCESSING ..."
+  fi  
+  echo "\nBuilt file list successfully"
+  echo "----------------------------------------"
+  return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to run the INFA workflow			             		   ##
+#***************************************************************************************************#
+
+function run_infa_workflow
+{
+  #--------------------------------------------------------------#
+  # Loops thru list of files and runs INFA workflow for each file
+  # 1. Start the process group
+  # 2. Remove trailer record from data file if required and save new file
+  # 3. Save input file name in ABC tables for file to landing session
+  # 4. Update the entry made in the T_FEED_RUN table, set values for PRCS_RUN_GID,
+  #    PRCS_GRP_RUN_GID
+  # 5. Execute the workflow
+  # 6. Remove temp file if created in step 2
+  # 7. Call edwt0029.ksh to match the count of records in landing table
+  #    with number of records in source file
+  #--------------------------------------------------------------#
+  
+  echo "----------------------------------------"
+  echo "Starting execution of INFA workflow"
+  echo "----------------------------------------"
+  files_processed="N"
+  for string in `cat $file_list`
+  do
+    files_processed="Y"
+    temp_file_saved="N"
+    echo "string is: $string"
+    
+    export infa_filename="`echo $string|cut -f1 -d '~'`"
+    export feed_run_gid="`echo $string|cut -f3 -d '~'`"
+    
+    echo "Feed run gid is: $feed_run_gid"
+    
+    echo "\nChanging permissions on $data_file_dir/$infa_filename"
+    chmod 644 $data_file_dir/$infa_filename
+    export RETCODE=$?
+    	STOPIFERROR "FAILURE OCCURED WHEN TRYING SET PERMISSIONS ON $data_file_dir/$infa_filename to 644"
+    echo "\nStarting process group $WORKFLOW_NAME for $infa_filename"
+    FORCE_START_PROCESS_GROUP $PRCS_GRP_GID
+    	STOPIFERROR "COULD NOT START PROCESS GROUP $PRCS_GRP_GID when processing $infa_filename"
+    get_prcs_gid 
+    STOPIFERROR "FAILURE OCCURED WHEN TRYING TO GET PRCS_GID for $PRCS_GRP_GID"
+	if [[ $trailer_sent == "Y" && $header_sent == "Y" ]]
+	then
+	echo "\nRemoving header and trailer from data file $infa_filename"
+      	col1="`echo $infa_filename | cut -f1 -d'.'`"
+	col2="`echo $infa_filename | cut -f2 -d'.'`"
+	col3="`echo $infa_filename | cut -f3 -d'.'`"
+      	outputfile=$data_file_dir/$col1.$col2.$col3.xml
+      	taillastchar1="`tail -c 1 $data_file_dir/$infa_filename`"
+      	taillastchar=`STR_TRIM ${taillastchar1}`
+      	if [[ "$taillastchar" != "" ]]
+      	then
+      		echo "" >> $data_file_dir/$infa_filename
+      	fi
+	tailrec1="`tail -1 $data_file_dir/$infa_filename`"
+	tailrec=`STR_TRIM ${tailrec1}`
+	if [[ "$tailrec" = "</$roottag>" ]]
+	then
+	      sed '1d;2d;$d' $data_file_dir/$infa_filename > $outputfile
+		  export RETCODE=$?
+	else
+	      sed '1d' $data_file_dir/$infa_filename > $outputfile
+		  export RETCODE=$?
+	fi
+      
+      if [[ $RETCODE != 0 ]] 
+      then
+      STOPIFERROR "An error occurred when trying to remove the trailer and header from $infa_filename, exiting ..."  
+	fi
+	if [[ -s ${outputfile} ]]
+      then
+	SAVE_DYNAMIC_PROCESS_PARAMETER $PRCS_GRP_GID $PRCS_GID '$INPUTFILENM' "${outputfile}"
+	STOPIFERROR "COULD NOT SAVE DYNAMIC PROCESS PARAM - INPUT_FILE_NM"
+      	temp_file_saved=Y
+      	echo "\nChanging permissions on ${outputfile}"
+        chmod 644 ${outputfile}
+        export RETCODE=$?
+        	STOPIFERROR "FAILURE OCCURED WHEN TRYING SET PERMISSIONS ON $data_file_dir/$infa_filename to 644"	
+       elif [[ -f ${outputfile} ]]
+      then
+        export RETCODE=1
+        	STOPIFERROR "An error occurred when trying to remove the trailer from $infa_filename,converted file is zero size, exiting ..."  
+    fi
+           
+    else 
+	SAVE_DYNAMIC_PROCESS_PARAMETER $PRCS_GRP_GID $PRCS_GID '$INPUTFILENM' "$data_file_dir/$infa_filename"
+	STOPIFERROR "COULD NOT SAVE DYNAMIC PROCESS PARAM - INPUT_FILE_NM"
+ fi
+    UPDATE_FEED_RUN $feed_run_gid $PRCS_GID
+       	STOPIFERROR "COULD NOT UPDATE THE FEED RUN row for $feed_run_gid"
+    echo "Executing process group $WORKFLOW_NAME for $infa_filename"    
+    EXECUTE_PROCESS_GROUP $PRCS_GRP_GID N
+		STOPIFERROR "COULD NOT EXECUTE WORKFLOW $WORKFLOW_NAME when processing $infa_filename"
+    echo "Workflow execution successful"	
+    if [[ $temp_file_saved == "Y" ]]
+    then
+      echo "\nRemoving ${outputfile}"
+      rm -f ${outputfile}
+      if [[ $? -ne 0 ]]
+      then
+        echo "\nWARNING: COULDNT REMOVE $outputfile"
+      else
+        echo "\nRemoved"  
+      fi
+    fi
+    
+  echo "\nCalling $LND_AUDIT_SCRIPT to perform audit on landing table $LANDING_DB.$landing_view_nm"
+    echo "Command is $EDW_SCRIPTS/$LND_AUDIT_SCRIPT -t $landing_view_nm -d $LANDING_DB -p $PRCS_RUN_GID -g $PRCS_GRP_RUN_GID -w $WRPR_RUN_GID -f $feed_run_gid"
+    $EDW_SCRIPTS/$LND_AUDIT_SCRIPT -t $landing_view_nm -d $LANDING_DB -p $PRCS_RUN_GID -g $PRCS_GRP_RUN_GID -w $WRPR_RUN_GID -f $feed_run_gid
+    export RETCODE=$?
+    	STOPIFERROR "ERROR occurred during execution of $LND_AUDIT_SCRIPT for $LANDING_DB.$landing_view_nm, exiting ..."
+    echo "Finished execution of $LND_AUDIT_SCRIPT for $LANDING_DB.$landing_view_nm successfully"    
+    
+       #------------------------------------------------------------#
+  done
+  
+  if [[ $files_processed == "N" ]]
+  then
+    echo "INFORMATICA WORKFLOW WAS NOT RUN, NO FILES TO PROCESS IN $file_list"
+  fi
+  echo "----------------------------------------"
+   return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to collect stats on the landing table		             		   ##
+#***************************************************************************************************#
+
+function collect_ststs
+{
+#-----------------------------------------------------------#
+# collecting stats on landing table
+#-----------------------------------------------------------#  
+  echo "----------------------------------------"
+  echo "Collecting the stats on landing table after executing data loads..."
+  echo "----------------------------------------"
+  run_sql="CALL DW_PR.SP_Collect_Stats_Prcs ('${PRCS_GRP_NM}','')"
+  error_msg="Error in calling collect stat procedure"
+  success_msg="collected stats successfully"
+  EXEC_APPLN_SQL "${run_sql}" "${error_msg}" "${success_msg}"
+  export RETCODE=$?
+  echo "----------------------------------------"
+  return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to archive the files				             		   ##
+#***************************************************************************************************#
+
+function archive_remaining_files
+{
+  #--------------------------------------------------------------#
+  # Will archive remaining data files and trigger file
+  #--------------------------------------------------------------#
+  echo "----------------------------------------"
+  echo "Starting archival of remaining files"
+  echo "----------------------------------------"
+  cd $data_file_dir
+  for remaining_file_line in `cat $file_list`
+  do
+    data_filename=`echo $remaining_file_line|cut -f1 -d '~'`
+    trg_filename=`echo $remaining_file_line|cut -f2 -d '~'`
+	tch_filename=`echo $data_filename |cut -f1 -d'.'`
+    archive_file $data_file_dir $data_filename
+    RETCODE=$?
+    if [[ $RETCODE != 0 ]]
+    then
+      echo "FILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+    fi
+    if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+    then
+      archive_file $data_file_dir $trg_filename
+      RETCODE=$?
+      if [[ $RETCODE != 0 ]]
+      then
+        echo "FILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+      fi
+    fi  
+  done
+  
+  
+  	if [[ -f $data_file_dir/${FEED_ID}.TCH ]]
+	then
+	archive_file $data_file_dir ${FEED_ID}.TCH
+    RETCODE=$?
+    if [[ $RETCODE != 0 ]]
+    then
+      echo "FILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+    fi
+	
+	elif [[ -f $data_file_dir/${tch_filename}.TCH ]]
+	then
+	archive_file $data_file_dir ${tch_filename}.TCH
+    RETCODE=$?
+    if [[ $RETCODE != 0 ]]
+    then
+      echo "TOUCH FILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+    fi
+	
+	elif [[ -f $data_file_dir/${FEED_ID}.TRIGGER ]]
+	then
+        tch_file_name="${FEED_ID}.TRIGGER"
+	archive_file $data_file_dir ${FEED_ID}.TRIGGER
+    RETCODE=$?
+    if [[ $RETCODE != 0 ]]
+    then
+      echo "FILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+    fi
+	fi
+	
+  echo "\nFile archival completed"
+  echo "----------------------------------------"  
+}
+
+#***************************************************************************************************#
+##This function is used to remove duplicates from landing table		             		   ##
+#***************************************************************************************************#
+
+function remove_dups_from_landing
+{
+  #-- Call this function to run if multiple files were loaded
+  echo "-------------------------------------------------------------------------------------"
+  RETCODE=0
+  if [[ ${call_dup_prcs} == "Y" ]]
+  then
+    echo "\nExecuting $EDW_SCRIPTS/${LND_DUP_REM_SCRIPT} -t $landing_view_nm -d $LANDING_DB"
+    $EDW_SCRIPTS/${LND_DUP_REM_SCRIPT} -t $landing_view_nm -d $LANDING_DB
+    RETCODE=$?
+    if [[ $RETCODE == 0 ]]
+    then
+      echo "Completed execution of $EDW_SCRIPTS/${LND_DUP_REM_SCRIPT} successfully"
+    fi  
+  else
+    echo "\nIn the metadata row for $FEED_ID in ${FEED_DB}.$FEED_TAB the column PRCS_DUP_RECS_IND is NOT set to Y"
+    echo "Hence, the script $EDW_SCRIPTS/${LND_DUP_REM_SCRIPT} was not executed"
+  fi
+  echo "-------------------------------------------------------------------------------------"
+  return $RETCODE
+}
+
+#***************************************************************************************************#
+##This function is used to cleanup the file list and any other temp files            		   ##
+#***************************************************************************************************#
+
+function cleanup
+{
+  #--------------------------------------------------------------#
+  # Will cleanup the file list and any other temp files
+  #--------------------------------------------------------------#
+  echo "----------------------------------------"
+  echo "CLEANUP UP ANY LEFT OVER FILES"
+  echo ""
+  if [[ -f $prcs_gid_list ]]
+  then
+    echo "File $prcs_gid_list will be removed ..."
+    rm -f $prcs_gid_list
+    retcode=$?
+    if [[ $retcode != 0 ]]
+    then
+      echo "WARNING: could not remove $prcs_gid_list"
+    else
+      echo "Removed"
+    fi
+  else
+    echo "File $prcs_gid_list is not present, nothing to clean"
+  fi
+  echo ""
+  if [[ -f $file_list ]]
+  then
+    echo "File $file_list will be removed ..."
+    rm -f $file_list
+    retcode=$?
+    if [[ $retcode != 0 ]]
+    then
+      echo "WARNING: could not remove $file_list"
+    else
+      echo "Removed"
+    fi
+  else
+    echo "File $file_list is not present, nothing to clean"
+  fi
+  echo "----------------------------------------"  
+}
+
+############################################################################################
+# MAIN FLOW                                                                                
+# 1. Validate the metadata for the feed
+# 2. Start the wrapper in ABC
+# 3. Release multi-load lock on landing table if any
+# 4. Truncate the landing table
+# 5. Build list of files to be processed
+# 6. Execute informatica workflow for all files - once for each file
+# 7. Remove any duplicates from landing table if multiple files were loaded
+# 8. Archive files
+# 9. Cleanup temporary files created for processing
+#10. Succeed wrapper in ABC
+############################################################################################
+
+optstr="`echo $@`"
+set_opts $@
+validate_opts
+set_env_vars
+
+
+echo "\n-----------------------------------------------------------------"
+echo "- Starting execution of $SCRIPT at ${EDW_TIMESTAMP}"
+echo "- JOB_NBR        :$JOB_NBR         "
+echo "- FEED_ID        :$FEED_ID         "
+echo "- FEED_TAB       :$FEED_TAB        "
+echo "- FEED_DB        :$FEED_DB         "
+echo "-----------------------------------------------------------------"
+
+##**********************************************************##
+##STEP 1:Get the feed details		                    ##
+##**********************************************************##
+
+get_and_check_feed_info
+STOPIFERROR "Error occurred when finding the metadata from $FEED_DB.$FEED_TAB for $FEED_ID"
+
+##**********************************************************##
+##STEP 2:Get wrpr and prcs grp details                      ##
+##**********************************************************##
+
+START_WRAPPER
+	STOPIFERROR "COULD NOT START THE WRAPPER $WRAPPER_GID, $JOB_NBR"
+
+##**********************************************************##
+##STEP 3:Release mload lock		                    ##
+##**********************************************************##
+
+release_mload_lock
+	STOPIFERROR 'FAILURE OCCURED WHEN TRYING TO RELEASE MLOAD LOCK ON LANDING TABLE'
+
+##**********************************************************##
+##STEP 4:Truncate the landing table	                    ##
+##**********************************************************##
+
+truncate_landing_table
+	STOPIFERROR 'FAILURE OCCURED WHEN TRYING TO TRUNCATE LANDING TABLE'
+
+##**********************************************************##
+##STEP 5:Import the library script	                    ##
+##**********************************************************##	
+
+ echo "----------------------------------------"
+  echo "Importing the library script ..."
+  . $EDW_SCRIPTS/$library_script_nm
+RETCODE=$?
+if [[ $RETCODE = 0 ]]
+then
+	echo "\nImported $EDW_SCRIPTS/$library_script_nm successfully"
+else
+	echo "\nError importing $EDW_SCRIPTS/$library_script_nm !"
+fi
+
+##**********************************************************##
+## Check for Zero byte file                                 ##
+##**********************************************************##	
+ echo "\nChecking for Zero byte files"
+ cd $data_file_dir
+ export list_command="ls $data_file_format"
+
+ for filename in `eval $list_command 2> /dev/null`
+ do
+
+  head -1 $filename >Zero_file1
+  tail -1 $filename >Zero_file2
+  diff Zero_file1 Zero_file2 >Zero_file3
+
+   feed_id_new=`echo $filename |cut -f1 -d'.'`
+   extract_date=`echo $filename |cut -f2 -d'.'`
+   export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}`
+  
+  echo "\nTrigger File Name is $data_file_dir/$trg_filename_new"
+  export trg_cnt_char_new=`cat $data_file_dir/$trg_filename_new|cut -c 85-104 | bc`
+  export trg_cnt_new="`expr $trg_cnt_char_new + 0`"
+  echo $trg_cnt_new
+  
+  if [[ ! -s $filename ]] || [[ ! -s Zero_file3 ]]
+  then
+  if [[ $trg_cnt_new == 0 ]]
+  then 
+   echo "\nFile $data_file_dir/$filename is zero size and the corrosponding trigger file count is also zero. Hence this file won't be loaded ..."
+   archive_file $data_file_dir $filename
+   archive_file $data_file_dir $trg_filename_new
+   #feed_id_new=`echo $filename |cut -f1 -d'.'`
+   #extract_date=`echo $filename |cut -f2 -d'.'`
+   #export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}`
+  else
+   email_med ZEROBYTE ${filename}
+   export ABORT_ZERO_TCH=`echo ABORT_$filename.ZERO.TCH`
+   touch $data_file_dir/$ABORT_ZERO_TCH
+   echo "\n Abort touch file name is $data_file_dir/$ABORT_ZERO_TCH"
+   archive_file_err $data_file_dir $filename
+   archive_file_err $data_file_dir $trg_filename_new
+  fi
+  fi
+  
+  rm -f $data_file_dir/Zero_file1
+  rm -f $data_file_dir/Zero_file2
+  rm -f $data_file_dir/Zero_file3
+ done
+
+ tch_filename=${feed_id_new}
+
+##**********************************************************##
+##STEP 6:Check for duplicates		                    ##
+##**********************************************************##	
+
+ cd $data_file_dir
+ export file_cnt="`ls -ltr $data_file_format|wc -l|bc`"
+
+file_cnt1="`expr $file_cnt + 0`"
+
+if [[ $file_cnt1 -gt 1 ]]
+then
+echo "Checking for duplicate files here "
+dups_file_err1
+rm -f $data_file_dir/filelist_MBR_CASE
+
+ export  RETCODE=$?
+  if [[ $RETCODE = 0 ]]
+  then
+   echo "\n Duplicate check completed"
+  else
+   echo "Error while finding duplicates in files"
+   STOPIFERROR 'FAILURE OCCURED WHEN TRYING TO FIND DUPLICATES IN FILES'
+  fi
+fi
+
+##**********************************************************##
+##STEP 7:Start the processing of files	                    ##
+##**********************************************************##
+
+ cd $data_file_dir
+ echo "\n Looking for files with format $data_file_format"
+  export list_command="ls -1tr $data_file_format"
+  files_exist=N
+  for filename in `eval $list_command 2> /dev/null`
+  do
+	
+files_exist=Y
+echo "\nProcessing $filename"
+if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+then
+echo "\nDeriving trigger file name"
+PARSE_FILENAME $filename
+echo "Trigger file name: $trg_filename"     
+else
+echo "Trigger file name is set to blank since TRG_FILE_SENT_IND = 'N' for this feed"
+trg_filename="Not sent by source system for this feed per design"
+fi
+
+
+if [[ ! -s $filename ]] 
+then
+ export zero_byte_file=Y     
+# archive_file $data_file_dir $filename
+# archive_file $data_file_dir $trg_filename 
+else
+ export zero_byte_file=N     
+fi  
+
+if [[ $zero_byte_file == "N" ]]
+then
+echo "\nDeriving file MD5"
+file_md5="`md5sum $filename|cut -f1 -d ' '`" 
+export RETCODE=$?
+if [[ $RETCODE != 0 ]] || [[ $file_md5 == "" ]] 
+then
+return 1
+fi
+#---THE SECTION BELOW CHECKS IF A FILE HAS BEEN LOADED BEFORE ---#
+#---THE CHECK IS ONLY PERFORMED IF THE FILE HAS SIZE > 0 --------#
+if [[ $zero_byte_file == "N" ]]
+then
+has_file_been_loaded_before $file_md5 
+export RETCODE=$?
+     if [[ $RETCODE != 0 ]] 
+     then
+       return $RETCODE
+fi
+if [[ $loaded_before == "Y" ]]
+then
+echo "\nFile $filename has been already been loaded, skipping this file ..." 
+tch_filename=`echo $filename |cut -f1 -d'.'`
+export file_flag="Y" 
+feed_id_new=`echo $filename |cut -f1 -d'.'`
+extract_date=`echo $filename |cut -f2 -d'.'`
+export trg_filename_new=`echo ${feed_id_new}.TRIGGER.${extract_date}`
+
+archive_file_err $data_file_dir $filename
+archive_file_err $data_file_dir $trg_filename_new
+archive_file_err $data_file_dir ${feed_id_new}.TCH 
+email_med DUPLICATES ${filename}
+
+RETCODE=$?
+if [[ $RETCODE != 0 ]]
+then
+echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+RETCODE=0
+fi
+
+continue
+	    fi
+fi 
+rm -f /appl/edw/apps/data/MEDD/case_nbr_check_file.txt 
+     echo "File not processed before checking for null case number"
+    echo "${data_file_dir}/${filename} is the file name"
+  awk 'FS="|~|" { if ( $26 ~ /^ *$/ ) printf("is null \n")} ' ${data_file_dir}/${filename} >>/appl/edw/apps/data/MEDD/case_nbr_check_file.txt  
+
+
+export file_flag="N"
+if [[ ! -s ${data_file_dir}/case_nbr_check_file.txt ]]
+then
+echo "\n${data_file_dir}/case_nbr_check_file.txt is zero size,So no null values present ..."
+else
+export file_flag="Y"
+echo "\n${data_file_dir}/case_nbr_check_file.txt is having content and the file is having null values for case_nbr"	   
+email_med nullvalues ${filename}
+
+echo "Archival of files with Null values started here" 
+archive_file_err $data_file_dir $filename
+archive_file_err $data_file_dir ${filename}.TCH
+RETCODE=$?
+if [[ $RETCODE != 0 ]]
+then
+echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+RETCODE=0
+fi
+
+if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+then
+archive_file_err $data_file_dir $trg_filename 
+RETCODE=$?
+if [[ $RETCODE != 0 ]]
+then
+echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+RETCODE=0
+fi
+fi
+
+fi
+
+  echo "getting the file count for $FEED_ID $data_file_dir $filename"
+
+if [[ $file_flag != "Y" ]]
+then
+GET_FILE_CNT $FEED_ID $data_file_dir $filename
+if [[ $? != 0 ]]
+then
+echo "ERROR OCCURRED TRYING TO GET FILE COUNT"
+return 1
+fi
+if [[ $header_sent == "Y" ]] || [[ $header_sent == "y" ]]
+then
+rec_cnt_sent=`expr $rec_cnt_sent - 1`
+fi
+
+echo "Trigger file is $incoming_dir/$trg_filename"
+if [[ -s $incoming_dir/$trg_filename ]]
+then
+export trg_cnt_char=`cat $incoming_dir/$trg_filename|cut -c 85-104 | bc`
+export trg_cnt="`expr $trg_cnt_char + 0`"
+#export trg_cnt="`expr $trg_cnt - 1`"
+echo $trg_cnt
+else
+echo "Trigger file $incoming_dir/$trg_filename is empty!!!"
+export trg_cnt=0
+fi
+if [ $rec_cnt_sent == $trg_cnt ]
+then 
+echo "\nFile count ${rec_cnt_sent} and audit count ${trg_cnt} match for ${filename}."
+echo "File not Skipped"
+
+else
+echo "\nMismatch between audit and file count. File count is $rec_cnt_sent however trg_cnt is $trg_cnt. Hence, $filename won't be loaded."
+echo "File Skipped"
+
+email_med CountMismatch ${filename}
+export ABORT_COUNT_TCH=`echo ABORT_$filename.COUNT.TCH`
+touch $data_file_dir/$ABORT_COUNT_TCH
+echo "\n Abort touch file name is $data_file_dir/$ABORT_COUNT_TCH"
+archive_file_err $data_file_dir $filename 
+archive_file_err $data_file_dir $trg_filename
+archive_file_err $data_file_dir ${filename}.TCH
+RETCODE=$?
+if [[ $RETCODE != 0 ]]
+then
+echo "\nFILE ARCHIVAL FAILED ... PLEASE CHECK LATER"
+RETCODE=0
+fi
+
+continue
+fi 
+fi
+fi
+done
+
+##**********************************************************##
+##STEP 8:Get the list of files to be processed              ##
+##**********************************************************##
+
+build_file_list 
+	STOPIFERROR "FAILURE OCCURED WHEN BUILDING LIST OF FILES TO PROCESS"
+
+##**********************************************************##
+##STEP 9:Run INFA workflow				    ##
+##**********************************************************##
+
+run_infa_workflow 
+	STOPIFERROR "FAILURE OCCURED WHILE LIST OF FILES TO PROCESS THROUGH INFA"
+
+file_count=`wc -l $file_list|awk '{print $1}'`
+if [[ $file_count -gt 1 ]]
+then
+  echo "\nMultiple files were loaded into landing during this run"
+  remove_dups_from_landing
+  	STOPIFERROR "FAILURE OCCURED WHEN RUNNING $LND_DUP_REM_SCRIPT"
+fi
+
+##**********************************************************##
+##STEP 10:Collect stats on landing table		    ##
+##**********************************************************##
+
+collect_ststs
+STOPIFERROR 'FAILURE OCCURED WHEN TRYING TO COLECT STATS ON LANDING TABLE'
+
+##**********************************************************##
+##STEP 11:Archive the files				    ##
+##**********************************************************##
+
+archive_remaining_files
+rm -f $data_file_dir/case_nbr_check_file.txt
+rm -f $data_file_dir/Zero_file1
+rm -f $data_file_dir/Zero_file2
+rm -f $data_file_dir/Zero_file3
+echo "Removed Temp Files"
+
+##**********************************************************##
+##STEP 12:Clean temp files				    ##
+##**********************************************************##
+
+cleanup 
+
+##**********************************************************##
+##STEP 13:Wrapper status check				    ##
+##**********************************************************##
+
+SUCCESS_WRAPPER
+	STOPIFERROR "COULD NOT SUCCEED WRAPPER"
