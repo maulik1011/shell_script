@@ -1,0 +1,222 @@
+#!/bin/ksh
+#----------------------------------------------------------------------------------------------------------------------
+# Base Script Name   : edwt0032.ksh
+
+# New Script Name    : edwt1211.ksh
+
+# Title         : Movement of File from incoming directory to Data directory.
+
+# Description   : This script will move the MEDD_MEDHOK data files, trigger files and touch files from incoming to data directory, without add any timestamp for trigger file
+#				  FEED_ID and Data file name varies for all MEDD_MEDHOK files. 
+				  				
+# Usage         : edwt1211.ksh  <Data Directory> <feed_id> <Outgoing Directory> <TRIGGER_FLG(OPTIONAL)>
+               
+# Examples      : edwt1211.ksh /appl/edw/incoming/MEDD MedHOK_CASE /appl/edw/apps/data/MEDD
+
+# Exit Codes    : 0 = OK; 1 = fatal error
+# Side Effects  : none
+#   DATE            CREATED BY              MODIFICATIONS
+#   ------------   ------------------      ---------------------------------------------------------
+#       29-SEP-2014   WIPRO TECHNOLOGIES            Created for ITPR008774
+#                                               Enterprise Med D Data Analytic Solution MedHOK CASE.
+#       06-June-2017  Cognizant                 Update as part of HPSM Ticket
+# 	                                            Used cp -p instead of cp while copying files to preserve timestamp
+#---------------------------------------------------------------------------------------------------
+SCRIPT=`basename $0`
+trap 'echo $SCRIPT: User interruption occured; exit 1' 2
+
+function USAGE
+{
+   print ""
+   print "Usage: ${SCRIPT} <Data Directory> <feed_id> <Outgoing Directory> <TRIGGER_FLG(OPTIONA)>"
+   print "Examples USAGE:"
+   print "${SCRIPT} /appl/edw/incoming/aetna ATN_SPCLT_DRUG /appl/edw/apps/data/aetna--> This will move data file as well as trigger file"
+   print ""
+   exit 1
+}
+
+function set_opts
+{
+   if [[ $# -eq 0 ]]
+   then
+        print "\n INVALID OPTIONS"
+        USAGE
+   elif [[ $# -eq 2 ]]
+   then
+      export DATA_DIR=$1
+      export feed_id=$2
+      export MOVE_FLG="N"
+    elif [[ $# -eq 3 ]]
+    then
+      export DATA_DIR=$1
+      export feed_id=$2
+      export OUT_DIR=$3
+      export MOVE_FLG="Y"
+    fi
+      export feed_id=`echo $feed_id|tr "[[:lower:]]" "[[:upper:]]"`
+}
+
+
+###################################################################
+#                                                                 #
+# BEGINNING OF FUNCTIONS DEFINITION                               #
+#                                                                 #
+###################################################################
+
+function process_started
+{
+  echo "\n###########################################################"
+  echo "- Starting execution of $SCRIPT at ${EDW_TIMESTAMP}"
+  echo "- FEED_ID        : $feed_id        "
+  echo "- DATA_DIR       : $DATA_DIR       "
+  echo "- OUT_DIR        : $OUT_DIR        "
+  echo "- MOVE_FLG       : $MOVE_FLG        "
+  echo "#############################################################"
+}
+
+function set_env_vars
+{
+  echo "\nDefining environment variables."
+  . ${EDW_HOME}/scripts/edwt0001.ksh
+  export EDW_APPLOG=$EDW_LOG/${SCRIPT}.$feed_id.$EDW_TIMESTAMP.log
+    echo "EDW_APPLOG is $EDW_APPLOG"
+
+  ARK_DIR=${EDW_ARCH}
+  echo "Data diretory is $DATA_DIR"
+  echo "feed is is $feed_id"
+     echo "-----------------------------------------------------------------"
+       echo "- Starting execution of $SCRIPT at ${EDW_TIMESTAMP}"
+       echo "- Log File: ${EDW_APPLOG}"
+       echo "-----------------------------------------------------------------" 
+    . ${EDW_HOME}/scripts/edwt0002.ksh
+}
+
+move_file_to_outdir()
+{
+ feed_id_new=MEDD_${feed_id}_MBR
+        #cp $DATA_DIR/$feed_id_new.* $OUT_DIR
+
+export data_file_format=MEDD_${feed_id}_MBR.1
+
+export list_command="ls -1tr $data_file_format*"
+echo "$list_command"
+cd $DATA_DIR
+
+for filename in `eval $list_command 2> /dev/null`
+  do
+           trg_file_sent_ind=Y
+           echo "\nProcessing $filename"
+
+                   if [[ $trg_file_sent_ind == "Y" ]] || [[ $trg_file_sent_ind == "y" ]]
+                           then
+                             echo "\nDeriving trigger file name"
+
+   feed_id_new1=`echo $filename |cut -f1 -d'.'`
+   extract_date=`echo $filename |cut -f2 -d'.'`
+   export trg_filename_new=`echo ${feed_id_new1}.TRIGGER.${extract_date}`
+   #echo "$feed_id_new"
+   #echo "$extract_date"
+   #echo "$trg_filename_new"
+
+echo "Trigger file name: $trg_filename_new"
+
+
+                                        if [[ ! -s $trg_filename_new ]]
+                                        then
+                                        echo "\nFile $trg_filename_new not there , this file wont be moved .."
+                                       else
+
+                                        cp -p $DATA_DIR/$trg_filename_new $OUT_DIR #changed as part of HPSM ticket
+                                        rm  -rf $DATA_DIR/$trg_filename_new
+                                        cp -p $DATA_DIR/$filename $OUT_DIR #changed as part of HPSM ticket
+                                        rm -rf $DATA_DIR/$filename
+                                  echo "Successfully moved data file $filename trigger file $trg_filename_new from $DATA_DIR to $OUT_DIR"
+                                        fi
+
+
+
+                           else
+                             echo "Trigger file name is set to blank since TRG_FILE_SENT_IND = 'N' for this feed"
+                             trg_filename="Not sent by source system for this feed per design"
+                   fi
+
+
+done
+
+        export RETCODE=$?
+                if [ $RETCODE != 0 ]
+                then
+                        echo "ERROR moving data file ($feed_id_new.*) to $OUT_DIR"
+                        exit $RETCODE
+                else
+                        #echo "Successfully moved data file ($feed_id_new.*) from $DATA_DIR to $OUT_DIR"
+                        echo "===================================== "
+                        echo "                      "
+                        break
+                fi
+        cp -p $DATA_DIR/$feed_id_new*TCH $OUT_DIR #changed as part of HPSM ticket
+        rm -rf $DATA_DIR/$feed_id_new*TCH
+        chmod 777 $OUT_DIR/$feed_id_new.*
+        export RETCODE=$?
+        if [ $RETCODE != 0 ]
+        then
+                echo "ERROR changing permission to data file from $OUT_DIR/$feed_id_new.*"
+                exit $RETCODE
+        else
+                echo "Successfully changed data file permission to $OUT_DIR/$feed_id_new.*"
+                echo "===================================== "
+                echo "                      "
+                break
+        fi
+}
+
+delete_file_from_datadir()
+{
+        echo "Preparing for data file delete from $DATA_DIR"
+        echo
+
+        rm -rf $DATA_DIR/$feed_id_new.*
+        export RETCODE=$?
+                if [ $RETCODE != 0 ]
+                then
+                        echo "ERROR deleting data file ($feed_id_new) from $DATA_DIR"
+                        exit $RETCODE
+                else
+                        echo "Successfully deleted data file ($feed_id_new) from $DATA_DIR"
+                        echo "===================================== "
+                        echo "                      "
+                        break
+                fi
+}
+
+#############################################################
+#      END OF FUNCTIONS DEFINITION                          #
+#                                                           #
+#############################################################
+
+#############################################################
+#      BEGIN MAIN SECTION                                   #
+#                                                           #
+#############################################################
+. ~/.profile
+optstr="`echo $@`"
+set_opts $@
+set_env_vars
+
+process_started
+if [[ $MOVE_FLG = "Y" ]]
+then
+        move_file_to_outdir
+else
+        echo "Out Directory is passed as NULL, hence the files will not be moved."
+        echo " Data file and trigger file are present in $DATA_DIR"
+fi
+
+#delete_file_from_datadir
+
+# =================================
+# Call UNIX script edwt0003.ksh:
+# =================================
+export RETCODE=$?
+    . $EDW_SCRIPTS/edwt0003.ksh
+exit $RETCODE
