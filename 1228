@@ -1,0 +1,879 @@
+#!/bin/ksh
+#***************************************************************************************************#
+# Script Name        : edwt1228.ksh
+#
+# Title              : Invokes the bteqs LND-ERR,LND-STG,STG-TGT AND POST LOAD for MedHOK feeds
+#
+# Description        : This script will invoke the bteq for LND-ERR,LND-STG,STG-TGT AND POST LOAD
+#                      Error notification to business for LND-ERR based on the flag
+#
+# Usage              : edwt1228.ksh -j <Maestro Job Nbr> -n <Wrapper Name>
+#                    : edwt1228.ksh -j <Maestro Job Nbr> -n <Wrapper Name>
+#                                   -t <Source Tablename> -d <Source Databasename> -f <Load Flag>
+#                                   -f= Loadflag E(Error),S(Stage),T(Target),U(unresolved)
+#
+# Examples           : edwt1228.ksh -j 325 -n MEDHOK_CASE_STG
+#                    : edwt1228.ksh -j 325 -n MEDHOK_CASE_STG -t V_MBR_MEDD_MEDHOK_CASE -d DWV_LD -f S
+#
+# Exit Codes         : 0 = OK; 1 = fatal error
+#
+#   Date                 Created by                                   Description
+#***************************************************************************************************#
+# 23-SEP-14                WIPRO                Created for ITPR008774
+#                                               Enterprise Med D Data Analytic Solution MedHOK Feeds.
+# 30-APRIL-17              WIPRO                Commented STEP 14 & STEP15 as part of BSRDW17653 
+#***************************************************************************************************#
+
+. ~/.profile
+
+SCRIPT=`basename $0`
+trap 'echo $SCRIPT: User interruption occured; exit 1' 2
+
+#***************************************************************************************************#
+##This function is used to set  the options		                           		   ##
+#***************************************************************************************************#
+
+function set_opts
+{
+   while getopts :j:n:t:d:f:  opts
+   do
+   case $opts in
+     \?)  USAGE;;
+      j)  export JOB_NBR=$OPTARG;;
+      n)  export WRAPPER_NAME=$OPTARG;;
+      t)  export TABLENAME=$OPTARG;;
+      d)  export DBNAME=$OPTARG;;
+	  f)  export LOADFLAG=$OPTARG;;
+      *)  print "Invalid option ($opts)"
+                  echo "--  Parameter count = $#"
+                 echo "--  Parameters:${optstr}"
+        USAGE;;
+   esac
+   done
+   if [[ $# -eq 0 ]]; then
+                                print "\n INVALID OPTIONS"
+                                USAGE
+   fi
+}
+
+#*************************************************************************************************##
+# This function is used to display  the usage of the script                          		  ##
+#**************************************************************************************************#
+
+function USAGE
+{
+   print ""
+   print "Usage: ${SCRIPT}  -j <Maestro Job Nbr> -n <Wrapper Name> -t <Source Tablename> 
+   			    -d <Source Databasename> -f <Load_flag>"
+   print "Examples"
+   print "${SCRIPT} -j ETBPX556 -n MEDHOK_CASE_STG -t V_MBR_MEDD_MEDHOK_CASE -d DWV_LD -f S"
+   print ""
+   exit 1
+}
+
+#***************************************************************************************************#
+##This function is used to validate  the options	                         		   ##
+#***************************************************************************************************#
+
+function validate_opts
+{
+   if [[ ! -n ${JOB_NBR} ]] ||
+      [[ ! -n ${WRAPPER_NAME} ]] ||
+      [[ ! -n ${TABLENAME} ]] ||
+      [[ ! -n ${DBNAME} ]]
+      [[ ! -n ${LOADFLAG} ]]
+   then
+      USAGE
+   fi
+}
+
+#***************************************************************************************************#
+##This function is used to get details          	                         		   ##
+#***************************************************************************************************#
+
+function get_detail
+{
+  fetch_sql="SELECT WRPR_GID FROM $ABC_DB.V_WRPR WHERE upper(WRPR_NM) = '${WRAPPER_NAME}' AND ACTV_IND = 'Y'"
+  error_msg="Error fetching WRPR_GID from V_WRPR for WRAPPER_NAME=${WRAPPER_NAME}"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export WRAPPER_GID=`STR_TRIM ${fetch_rslt}`
+
+
+  echo "WRAPPER GID is ${WRAPPER_GID}"
+
+  fetch_sql="SELECT PRCS_GRP_NM FROM $ABC_DB.V_PRCS_GRP WHERE WRPR_GID = '${WRAPPER_GID}' AND ACTV_IND = 'Y'"
+  error_msg="Error fetching PRCS_GRP_NM from V_PRCS_GRP for WRAPPER_NAME=${WRAPPER_NAME}"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export PRCS_GRP_NM=`STR_TRIM ${fetch_rslt}`
+  export PRCS_NM=$PRCS_GRP_NM
+  export BTEQ_NAME=$PRCS_NM
+
+
+  echo "PRCS_GRP_NM is ${PRCS_GRP_NM}\n"
+  echo "PRCS_NM is ${PRCS_NM}\n"
+  echo "BTEQ_NAME is ${PRCS_NM}\n"
+
+  fetch_sql="SELECT PRCS_GRP_GID FROM $ABC_DB.V_PRCS_GRP WHERE WRPR_GID = ${WRAPPER_GID} \
+  AND upper(PRCS_GRP_NM) = '${PRCS_GRP_NM}' AND ACTV_IND = 'Y'"
+  error_msg="Error fetching PRCS_GRP_GID from V_PRCS_GRP for WRPR_GID = ${WRAPPER_GID} \
+  upper(PRCS_GRP_NM) = '${PRCS_GRP_NM}' AND ACTV_IND = 'Y'"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export PRCS_GRP_GID=`STR_TRIM ${fetch_rslt}`
+  echo "PRCS_GRP_GID is ${PRCS_GRP_GID}\n"
+
+  fetch_sql="SELECT PRCS_GID \
+  FROM ${ABC_DB}.V_PRCS_GRP PG \
+  INNER JOIN ${ABC_DB}.V_PRCS P \
+  ON PG.PRCS_GRP_GID = P.PRCS_GRP_GID \
+  INNER JOIN ${ABC_DB}.V_WRPR W \
+  ON PG.WRPR_GID = W.WRPR_GID \
+  WHERE WRPR_NM = '${WRAPPER_NAME}' \
+  AND PRCS_GRP_NM = '${PRCS_GRP_NM}' \
+  AND   PRCS_NM = '${PRCS_NM}' \
+  AND   PG.ACTV_IND = 'Y' \
+  AND   P.ACTV_IND  = 'Y' \
+  AND   W.ACTV_IND  = 'Y'"
+
+  error_msg="Error fetching PRCS_GID associated with PRCS_NM and PRCS_GRP_NM"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export PRCS_GID=`STR_TRIM ${fetch_rslt}`  
+  echo "PRCS_GID is ${PRCS_GID}\n"
+
+}
+
+#***************************************************************************************************#
+## This function is used to get record count from respective table based on load flag value        ##
+#***************************************************************************************************#
+
+function REC_COUNT
+{
+  
+  if [ $LOADFLAG = "E" ]
+  then
+	
+  fetch_sql="select count(*) from DWV_ERR.$TABLENAME"
+
+  error_msg="Error fetching record count from Error table"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  col1="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+
+  export Rec_cnt_Err=`STR_TRIM ${col1}`
+  INSERT_STAT_ROW_CASE E ${RN_WRPR_RUN_GID} ${RN_PRCS_GRP_RUN_GID} ${RN_PRCS_RUN_GID} NULL ${Rec_cnt_Err}
+  echo "count"
+  echo "${RN_WRPR_RUN_GID} ${RN_PRCS_GRP_RUN_GID} ${RN_PRCS_RUN_GID} NULL ${Rec_cnt_Err}"
+  export retcode_exec=$?
+  if [[ $retcode_exec -ne 0 ]]
+  then
+  echo "Error Occurred when Collecting Error table statistics!!"
+  end_process F
+  fi
+
+  
+  elif [ $LOADFLAG = "S" ] 
+  then
+  
+  fetch_sql="select count(*) from DWV_ST.$TABLENAME "
+
+  error_msg="Error fetching record count from Stage table"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  col2="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+
+  export Rec_cnt_Stg=`STR_TRIM ${col2}`
+ 
+  INSERT_STAT_ROW_CASE S ${RN_WRPR_RUN_GID} ${RN_PRCS_GRP_RUN_GID} ${RN_PRCS_RUN_GID} NULL ${Rec_cnt_Stg}
+  export retcode_exec=$?
+  if [[ $retcode_exec -ne 0 ]]
+  then
+  echo "Error Occurred when Collecting Stage table statistics!!"
+  end_process F
+  fi
+
+ 
+  elif [ $LOADFLAG = "T" ] 
+  then
+  
+  fetch_sql="select count(*) from DWV_EDW.TABLENAME"
+
+  error_msg="Error fetching record count from Target table"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  col3="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+
+  export Rec_cnt_Tgt=`STR_TRIM ${col3}`
+
+  INSERT_STAT_ROW_CASE T ${RN_WRPR_RUN_GID} ${RN_PRCS_GRP_RUN_GID} ${RN_PRCS_RUN_GID} NULL ${Rec_cnt_Tgt}
+  export retcode_exec=$?
+  if [[ $retcode_exec -ne 0 ]]
+  then
+  echo "Error Occurred when Collecting Target table statistics!!"
+  end_process F
+  fi
+  
+  fi
+  
+}
+
+#***************************************************************************************************#
+##This function is used to get parameter values based on load flag value                           ##
+#***************************************************************************************************#
+
+function get_params
+{
+  if [ $LOADFLAG = "E" ]
+  then
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_LND'"
+  error_msg="Error fetching parameter DB_LND from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_LND=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_LND  is ${DB_LND}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ERR'"
+  error_msg="Error fetching parameter DB_ERR  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ERR=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ERR  is ${DB_ERR}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$ERR_IND'"
+  error_msg="Error fetching parameter ERR_IND  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export ERR_IND=`STR_TRIM ${fetch_rslt}`
+
+  echo "ERR_IND  is ${ERR_IND}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$FEED_ID'"
+  error_msg="Error fetching parameter FEED_ID from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export FEED_ID=`STR_TRIM ${fetch_rslt}`
+  
+  echo "FEED_ID  is ${FEED_ID}"  
+      
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$EMAIL_LIST'"
+  error_msg="Error fetching parameter EMAIL_LIST from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export EMAIL_LIST=`STR_TRIM ${fetch_rslt}`
+
+  echo "EMAIL_LIST  is ${EMAIL_LIST}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ABC'"
+  error_msg="Error fetching parameter DB_ABC  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ABC=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ABC  is ${DB_ABC}"
+
+
+  elif [ $LOADFLAG = "S" ] 
+  then
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_LND'"
+  error_msg="Error fetching parameter DB_LND from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_LND=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_LND  is ${DB_LND}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_STG'"
+  error_msg="Error fetching parameter DB_STG  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_STG=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_STG  is ${DB_STG}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_EDW'"
+  error_msg="Error fetching parameter DB_EDW  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_EDW=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_EDW  is ${DB_EDW}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ABC'"
+  error_msg="Error fetching parameter DB_ABC  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ABC=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ABC  is ${DB_ABC}"
+  
+  
+  elif [ $LOADFLAG = "T" ] 
+  then
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$EDW_TBL'"
+  error_msg="Error fetching parameter EDW_TBL  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export EDW_TBL=`STR_TRIM ${fetch_rslt}`
+
+  echo "EDW_TBL  is ${EDW_TBL}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_STG'"
+  error_msg="Error fetching parameter DB_STG  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_STG=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_STG  is ${DB_STG}"
+   
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_EDW'"
+  error_msg="Error fetching parameter DB_EDW  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_EDW=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_EDW  is ${DB_EDW}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ABC'"
+  error_msg="Error fetching parameter DB_ABC  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ABC=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ABC  is ${DB_ABC}"
+
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_LND'"
+  error_msg="Error fetching parameter DB_LND from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_ALLOWED
+  export DB_LND=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_LND  is ${DB_LND}"
+  
+  elif [ $LOADFLAG = "U" ]
+  then
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$NUM_DAYS'"
+  error_msg="Error fetching parameter NUM_DAYS  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export NUM_DAYS=`STR_TRIM ${fetch_rslt}`
+
+  echo "NUM_DAYS  is ${NUM_DAYS}" 
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$NUM_ERR_DAYS'"
+  error_msg="Error fetching parameter NUM_ERR_DAYS  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export NUM_ERR_DAYS=`STR_TRIM ${fetch_rslt}`
+
+  echo "NUM_ERR_DAYS  is ${NUM_ERR_DAYS}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ERR'"
+  error_msg="Error fetching parameter DB_ERR  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ERR=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ERR  is ${DB_ERR}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_EDW'"
+  error_msg="Error fetching parameter DB_EDW  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_EDW=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_EDW  is ${DB_EDW}"
+  
+  fetch_sql="SELECT PARM_VAL_TXT FROM $ABC_DB.V_PARM WHERE WRPR_GID='${WRAPPER_GID}' AND PARM_NM='\$\$DB_ABC'"
+  error_msg="Error fetching parameter DB_ABC  from V_PARM for WRAPPER_NAME=${WRAPPER_NAME}"
+ 
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  export DB_ABC=`STR_TRIM ${fetch_rslt}`
+
+  echo "DB_ABC  is ${DB_ABC}"
+  
+  fi
+    
+}
+
+#***************************************************************************************************#
+##This function is used to get landing count based on REC_HIST_GID value                           ##
+#***************************************************************************************************#
+
+function get_landing
+{
+  fetch_sql="sel count(*) from $DBNAME.$TABLENAME group by rec_hist_gid"
+  error_msg="Error in Extracting REC_HIST_GID from $DBNAME.$TABLENAME"
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_ALLOWED
+
+  landcount="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+
+  export Rec_cnt=`STR_TRIM ${landcount}`
+
+  if [ $Rec_cnt >0 ]
+  then
+  Get_wrpr_pgrp_prcs_run_info
+  #REC_COUNT
+  fi
+}
+
+#***************************************************************************************************#
+##This function is used to dynamic GIDs values				                           ##
+#***************************************************************************************************#
+
+function Get_wrpr_pgrp_prcs_run_info
+{
+  fetch_sql="select rhist.PRCS_RUN_GID,pgrr.WRPR_RUN_GID,rhist.PRCS_GRP_RUN_GID
+  from dwt_abc.t_rec_hist rhist inner join 
+  dwt_abc.t_prcs_grp_run pgrr on  rhist.prcs_grp_run_gid=pgrr.prcs_grp_run_gid
+  where rhist.prcs_run_gid=${prcs_run_gid}"
+
+  error_msg="Error fetching Wrpr,Prcs_grp,Prcs from V_REC_HIST,V_PRCS_GRP_RUN for PRCS_RUN_GID:${prcs_run_gid}."
+  FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+  col1="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+  col2="`echo ${fetch_rslt}|cut -f2 -d'~'`"
+  col3="`echo ${fetch_rslt}|cut -f3 -d'~'`"
+
+  export RN_PRCS_RUN_GID=`STR_TRIM ${col1}`
+  export RN_WRPR_RUN_GID=`STR_TRIM ${col2}`
+  export RN_PRCS_GRP_RUN_GID=`STR_TRIM ${col3}`
+}
+
+#********************************************************************************************************#
+##This function is used to insert TRIGGER, FILE, RECORDS LANDED COUNT statistics into T_RUN_STAT table  ##
+#********************************************************************************************************#
+
+INSERT_STAT_ROW_CASE()
+{
+  if [[ $# -ne 6 ]]
+  then
+    echo "PLEASE PASS THE ARGUMENTS IN THIS ORDER"
+    echo "1. STAT_TYPE (E/S/T)"
+    echo "2. WRPR_RUN_GID"
+    echo "3. PRCS_GRP_RUN_GID"
+    echo "4. PRCS_RUN_GID"
+    echo "5. FEED_RUN_GID"
+    echo "6. STAT_VAL"
+    return 1
+  fi
+  stat_type=$1
+  case $stat_type in
+        E|e) STAT_TYP_CD="ERR_CNT"
+         STAT_NM="Records loaded in Error table";;
+        S|s) STAT_TYP_CD="STG_CNT"
+         STAT_NM="Records loaded in Staging table";;
+        T|t) STAT_TYP_CD="TGT_CNT"
+         STAT_NM="Records loaded in Target table";;
+       
+	    *) echo "1st argument to function can only be E/S/T"
+                 return 1;;
+  esac
+  wrpr_run_gid=$2
+  prcs_grp_run_gid=$3
+  prcs_run_gid=$4
+  feed_run_gid=$5
+  stat_val=$6
+  run_sql="INSERT INTO ${ABC_DB}.V_RUN_STAT (\
+                                   PRCS_RUN_GID,\
+                                   WRPR_RUN_GID,\
+                                   PRCS_GRP_RUN_GID,\
+                                   STAT_TYP_CD,\
+                                   STAT_NM,\
+                                   STAT_VAL,\
+                                   REC_ADD_TS,\
+                                   FEED_RUN_GID\
+                                  ) \
+                           VALUES (
+                                    ${prcs_run_gid}, \
+                                    ${wrpr_run_gid},\
+                                    ${prcs_grp_run_gid},\
+                                    '${STAT_TYP_CD}',\
+                                    '${STAT_NM}',\
+                                    ${stat_val},\
+                                    CAST(CURRENT_TIMESTAMP(0) AS TIMESTAMP(0)),\
+                                    ${feed_run_gid}\
+                                  );"
+  error_msg="Error inserting in ${ABC_DB}.V_RUN_STAT."
+  success_msg="Record successfully inserted into V_RUN_STAT."
+  EXEC_APPLN_SQL "${run_sql}" "${error_msg}" "${success_msg}"
+  export RETCODE=$?
+  if [[ $RETCODE != 0 ]]
+  then
+    echo "Error during execution of SQL"
+    return $RETCODE
+  fi
+  return 0
+}
+
+#********************************************************************************************************#
+##This function is used generate REC_HIST_GID 								##
+#********************************************************************************************************#
+
+function insert_rec_hist_gids
+{
+   echo ""
+   echo "Inserting audit row into T_REC_HIST using edwt0028.ksh"
+   echo "Executing $EDW_HOME/scripts/edwt0028.ksh -t ${TABLENAME} -d ${DBNAME} -g ${PRCS_GID}"
+   $EDW_HOME/scripts/edwt0028.ksh -t ${TABLENAME} -d ${DBNAME} -g ${PRCS_GID}
+   RETCODE=$?
+   return $RETCODE  
+}
+
+#********************************************************************************************************#
+##This function is used start the process								##
+#********************************************************************************************************#
+
+function start_process
+{
+  echo "Starting process"
+  echo "Command is: $EDW_HOME/scripts/edwt0020.ksh -o PROCESS -p ${PRCS_GID} -S N"
+  $EDW_HOME/scripts/edwt0020.ksh -o PROCESS -p ${PRCS_GID} -S N
+  RETCODE=$?
+  return $RETCODE
+}
+
+#********************************************************************************************************#
+##This function is used end the process    								##
+#********************************************************************************************************#
+
+function end_process
+{
+  export status=$1
+  echo "Ending process"
+  echo "Command is: $EDW_HOME/scripts/edwt0021.ksh -o PROCESS -g ${PRCS_GID} -s $status"
+  $EDW_HOME/scripts/edwt0021.ksh -o PROCESS -g ${PRCS_GID} -s $status
+  RETCODE=$?
+  if [[ $RETCODE != 0 ]]
+  then
+      echo "ERROR: Could not fail process!!"
+      return $RETCODE
+  fi
+}
+
+#********************************************************************************************************#
+##This function is used fetch PROCESS RUN INFO 								##
+#********************************************************************************************************#
+
+function get_process_run_info
+{
+   fetch_sql="SELECT v.prcs_run_gid \
+                FROM (SELECT prcs_run_gid, \
+                             ROW_NUMBER () OVER (PARTITION BY prcs_gid \
+                             ORDER BY rec_add_ts, prcs_run_gid DESC) rn \
+                        FROM ${ABC_DB}.v_prcs_run \
+                       WHERE prcs_gid =${PRCS_GID} \
+                       and prcs_stus_txt='R' ) v\
+               WHERE v.rn = 1"
+
+   error_msg="Error fetching PRCS_RUN_GID from V_PRCS_RUN for PRCS_GID:${PRCS_GID}."
+   FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_NOT_ALLOWED
+
+   col1="`echo ${fetch_rslt}|cut -f1 -d'~'`"
+   prcs_run_gid=`STR_TRIM ${col1}`
+   prcs_run_gid="`echo $prcs_run_gid|sed 's/[. ]*$//`"
+   echo "PRCS_RUN_INFO: PRCS_RUN_GID for PRCS_GID:${PRCS_GID} is ${prcs_run_gid}"
+   export prcs_run_gid
+}
+
+#********************************************************************************************************#
+##This function is used execute the Bteq 								##
+#********************************************************************************************************#
+
+function execute_bteq
+{
+  BTEQ_PATH=${EDW_HOME}/bteq
+  TMP_PATH=${EDW_HOME}/tmp
+
+  bteq_file="${BTEQ_NAME}.bteq"
+  tmp_file="${BTEQ_NAME}_TMP.bteq"
+
+  if [[ -f ${BTEQ_PATH}/$bteq_file ]] then
+  if [[ -f ${TMP_PATH}/$tmp_file ]] then
+  ##rm -f ${TMP_PATH}/$tmp_file
+  ## RETCODE=$?
+  RETCODE=0 
+  if [[ $RETCODE == 0 ]] then
+  echo "${TMP_PATH}/$tmp_file deleted before execution"
+  else
+  echo "Cannot remove ${TMP_PATH}/$tmp_file"
+  return 10
+  fi
+  else
+  echo "${TMP_PATH}/$tmp_file does not exist"
+  fi
+
+  get_process_run_info
+  echo "PRCS_RUN_GID for PRCS_GID:${PRCS_GID} is ${prcs_run_gid}"  
+  cat ${BTEQ_PATH}/$bteq_file | sed -e 's/$$PRCS_RUN_GID/'"${prcs_run_gid}"'/g' -e 's/$$PRCS_GID/'"${PRCS_GID}"'/g' -e 's/$$DB_ABC/'"${DB_ABC}"'/g' -e 's/$$DB_LND/'"${DB_LND}"'/g' -e 's/$$DB_ERR/'"${DB_ERR}"'/g' -e 's/$$NUM_DAYS/'"${NUM_DAYS}"'/g' -e 's/$$NUM_ERR_DAYS/'"${NUM_ERR_DAYS}"'/g' -e 's/$$DB_STG/'"${DB_STG}"'/g'  -e 's/$$DB_EDW/'"${DB_EDW}"'/g'  >   ${TMP_PATH}/$tmp_file
+  RETCODE=$?
+
+  if [[ $RETCODE != 0 ]]
+  then
+  echo "ERROR: Could not create ${TMP_PATH}/$tmp_file"
+  return 1
+  fi
+
+  echo "${TMP_PATH}/$tmp_file file created successfully"
+  export BTEQNAME=${BTEQ_NAME}_TMP
+
+  bteq_sql="`cat ${TMP_PATH}/${tmp_file}`"
+  error_msg="Error executing BTEQ script ....."
+  success_msg="BTEQ script executed successfully ....." 
+  echo "${bteq_sql}"
+  EXEC_APPLN_SQL "${bteq_sql}" "${error_msg}" "${success_msg}"
+  export RETCODE=$?
+  echo $RETCODE
+
+  if [[ $RETCODE == 0 ]]
+  then
+    if [[ -f ${TMP_PATH}/${BTEQNAME}.bteq ]] then
+    ##rm -f ${TMP_PATH}/${BTEQNAME}.bteq
+    RETCODE=$?
+    if [[ $RETCODE == 0 ]] then
+    echo "${TMP_PATH}/${BTEQNAME}.bteq deleted after execution"
+    else
+    echo "${TMP_PATH}/${BTEQNAME}.bteq does not exist"
+    fi
+    fi
+    else
+    return 1  
+    fi
+    else
+    echo "${BTEQ_PATH}/$bteq_file not found!!"
+    return 20
+  fi
+}
+
+#****************************************************************************************************#
+##This function is used check whether any records inserted into Error table & triggers mail         ##
+#****************************************************************************************************#
+
+function err_records_check
+{
+
+   export rec_gid=$1
+
+   echo "PRCS_GRP_RUN_GID : $PRCS_GRP_RUN_GID"
+   fetch_sql="SELECT 'REC_HIST_GID:'||'^'||SRC1.REC_HIST_GID||'^'||' FILE NAME : '||'^'||DENORM.DATA_FILE_NM||'^'||'  No.of the Records:'||'^'||SRC1.CNT FROM DWV_ABC.V_REC_HIST_DENORM DENORM\
+    INNER JOIN\
+    (SELECT  HIST.REC_HIST_GID,HIST.PRNT_REC_HIST_GID,SRC.CNT FROM  DWV_ABC.V_REC_HIST HIST\
+    INNER JOIN\
+    (SELECT REC_HIST_GID,COUNT(*) CNT FROM  $DB_ERR.$TABLENAME WHERE REC_HIST_GID\
+    IN\
+    (SELECT REC_HIST_GID  FROM DWV_ABC.V_REC_HIST WHERE PRNT_REC_HIST_GID=$rec_gid) GROUP BY REC_HIST_GID HAVING COUNT(*)>0) SRC\
+    ON HIST.REC_HIST_GID=SRC.REC_HIST_GID)SRC1\
+    ON\
+    DENORM.REC_HIST_GID_KEY=$rec_gid"
+    error_msg="Error in fetching details of the file that inserted errors into  Error Table :$DB_ERR.$TABLENAME"
+
+    success_msg="Successfully fetched details of the file that inserted errors into  $DB_ERR.$TABLENAME"
+    FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_ALLOWED MULTIPLE
+    echo $fetch_rslt
+    REC_HIST_GID="`echo ${fetch_rslt}|cut -f2 -d'^'`"
+    DATA_FILE_NM="`echo ${fetch_rslt}|cut -f4 -d'^'`"
+    REC_CNT="`echo ${fetch_rslt}|cut -f6 -d'^'`"
+
+      if [[ ${fetch_rslt:-none} = "none" ]];
+      then
+       echo "-------------------------------------------------------------------------------------"
+       echo " No Rows inserted into $DB_ERR.$TABLENAME. No email will be sent to business team"
+       echo "---------------------------------------------------------------------------------------"
+      else
+
+      #********************************MAIL SENT***************************************************#
+       export SUBJ="ALERT: ACTION REQUIRED - $FEED_ID FEED - $TABLENAME table is loaded with Error records in EDW"    
+	MSG=`echo "Team,\n
+	\n $FEED_ID feed received by EDW IT has ERROR records in the below file(s)
+	\n FILE NAME: ${DATA_FILE_NM}
+	\n ERROR TABLE NAME: $TABLENAME
+	\n REC_HIST_GID: ${REC_HIST_GID}
+	\n TOTAL RECORDS: ${REC_CNT} 
+	\n Please investigate the error records in error table and work with source/business team to get the correct records to EDW
+	\n PS: Do not respond to this email, as this mailbox is not monitored
+	\n 
+	\n Regards
+	\n Data Warehouse Production Support Team 
+	\n"`    
+                        
+      echo "${MSG} | /bin/mailx -s ${SUBJ} ${EMAIL_LIST}"
+
+	  echo "${MSG}" | /bin/mailx -s "${SUBJ}" "${EMAIL_LIST}" 
+
+      echo "-------------------------------------------"
+      echo " Mail sent to the business team"
+      echo "-------------------------------------------"
+	 fi
+
+    export RETCODE=$?
+      echo "----------------------------------------"
+       if [ $RETCODE != 0 ];
+       then
+       echo "Error occurred while validating the error records inserted into Error Table $DB_ERR.$TABLENAME " 
+       else
+       echo "Validated error records successfully in Error Table $DB_ERR.$TABLENAME "
+       fi
+}
+
+#********************************************************************************************************#
+##This function is used check REC_HIST_GID                                                              ##
+#********************************************************************************************************#
+
+function CHECK_REC_HIST_GID
+{
+
+fetch_sql="sel rec_hist_gid from $DBNAME.$TABLENAME group by rec_hist_gid"
+error_msg="Error in Extracting REC_HIST_GID from $DBNAME.$TABLENAME"
+FETCH_DATA "${fetch_sql}" "${error_msg}" NULL_ALLOWED
+
+
+ export  data_se1=`echo "$fetch_rslt"| tr "\n" " " |cut -f1- -d " "`
+  for REC_HIST_GID in $data_se1
+  do
+echo "Processing $REC_HIST_GID"
+err_records_check $REC_HIST_GID
+done
+}
+
+#****************************************************************#
+# MAIN FLOW                                                      #
+#****************************************************************#
+
+. ~/.profile
+  optstr="`echo $@`"
+  set_opts $@
+  validate_opts
+
+. ${EDW_HOME}/scripts/edwt0001.ksh
+
+  export EDW_APPLOG=$EDW_LOG/${SCRIPT}.${WRAPPER_NAME}.$EDW_TIMESTAMP.log
+  echo "-----------------------------------------------------------------"
+  echo "- Starting execution of $SCRIPT at ${EDW_TIMESTAMP}"
+  echo "- Log File: ${EDW_APPLOG}"
+  echo "-----------------------------------------------------------------"  
+
+. ${EDW_HOME}/scripts/edwt0002.ksh
+. ${EDW_HOME}/scripts/edwt0013.ksh
+
+##**********************************************************##
+##STEP 1:Get wrpr and prcs grp details                      ##
+##**********************************************************##
+
+get_detail
+
+##**********************************************************##
+##STEP 2:GET param details                                  ##
+##**********************************************************##
+
+get_params
+
+##**********************************************************##
+##STEP 3:Start wrapper                                      ##
+##**********************************************************##
+
+START_WRAPPER
+	STOPIFERROR "COULD NOT START THE WRAPPER"
+	
+##**********************************************************##
+##STEP 4:Start process group                                ##
+##**********************************************************##
+	
+START_PROCESS_GROUP $PRCS_GRP_GID
+	STOPIFERROR "COULD NOT START PROCESS GROUP"
+
+##**********************************************************##
+##STEP 5:Start process                                      ##
+##**********************************************************##
+	
+start_process
+	STOPIFERROR "COULD NOT START PROCESS!!"
+
+##**********************************************************##
+##STEP 6:Generated rec hist gids                            ##
+##**********************************************************##
+	
+insert_rec_hist_gids
+	STOPIFERROR "COULD NOT GET REC_HIST_GID"
+
+##**********************************************************##
+##STEP 7:Process check                                      ##
+##**********************************************************##	
+
+if [[ ${RETCODE} != 0 ]]
+then
+end_process F
+fi
+
+echo "STARTING EXECUTION OF THE BTEQ"
+
+##**********************************************************##
+##STEP 8: Bteq execution                                    ##
+##**********************************************************##
+
+execute_bteq
+	STOPIFERROR "COULD NOT SUCCEED WRAPPER"
+	
+##**********************************************************##
+##STEP 9: End the process                                   ##
+##**********************************************************##
+
+echo "SUCCESS: ALL STEPS FINISHED"
+end_process S
+
+##**********************************************************##
+##STEP 10: Process check                                    ##
+##**********************************************************##
+
+RETCODE=$?
+if [[ ${RETCODE} = 0 ]]
+then
+${EDW_HOME}/scripts/edwt0021.ksh -o PROCESS_GROUP -g ${prcs_grp_gid} -s S
+
+##**********************************************************##
+##STEP 11: Process group check                              ##
+##**********************************************************##   
+
+RETCODE=$?
+STOPIFERROR "COULD NOT SUCCEED PROCESS GROUP."
+else
+echo "\nBTEQ execution has failed."
+${EDW_HOME}/scripts/edwt0021.ksh -o PROCESS_GROUP -g ${prcs_grp_gid} -s F
+RETCODE=$?
+STOPIFERROR "COULD NOT FAIL PROCESS GROUP."
+fi
+
+##**********************************************************##
+##STEP 12: Get Source table count                           ##
+##**********************************************************##
+   
+get_landing
+
+##**********************************************************##
+##STEP 13:Process check                                     ##
+##**********************************************************##
+RETCODE=$?
+if [[ ${RETCODE} != 0 ]]
+then
+end_process F
+fi
+
+##**********************************************************##
+##STEP 14: Mail trigger function for LND-ERR                ##
+##**********************************************************##
+# Commented STEP 14 & STEP15 as part of BSRDW17653
+#if [ ${ERR_IND} = "Y" ]
+#then
+#CHECK_REC_HIST_GID
+#fi
+
+##**********************************************************##
+##STEP 15: Function check                                   ##
+##**********************************************************##
+
+#  STOPIFERROR "A FAILURE OCCURED WHEN TRYING TO CHECK IF ERROR TABLE CONTAINED ERROR RECORDS"
+  
+##**********************************************************##
+##STEP 16: Wrapper check                                    ##
+##**********************************************************##
+
+SUCCESS_WRAPPER
+	STOPIFERROR "COULD NOT SUCCEED WRAPPER"
