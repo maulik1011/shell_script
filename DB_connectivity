@@ -1,0 +1,261 @@
+from utility import DBConnectivity
+import exceptions
+from classes.applicant import applicant
+import cx_Oracle
+from exceptions.LoginException import invalidlogin
+def get_id():
+    
+    con=DBConnectivity.create_connection()
+    cur=DBConnectivity.create_cursor(con)
+    
+    list2=[]
+    cur.execute("select id from applicant")
+    for a in cur:
+        list2.append(a[0])
+    
+    return list2
+    cur.close()
+    con.close()
+def get_password(id1):
+    
+    con=DBConnectivity.create_connection()
+    cur=DBConnectivity.create_cursor(con)
+    
+    appl=applicant()
+    appl.set_id(id1)
+    
+    cur.execute("select password from applicant where id="+str(id1))
+    for row in cur:
+            a=row[0]
+    return a
+    cur.close()
+    con.close()
+def insert_applicant(i,a,b,c,d,e):
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        
+#         cur.execute("insert into applicant values(:id1,:name1,:pas,:skill,:exp1,:tech1)",{"id1":i,"name1":a,"pas":b,"skill":c,"exp1":d,"tech1":e})
+        out = cur.var(cx_Oracle.NUMBER)
+            
+        execute_proc=cur.callproc('insert_applicant',[int(i),a,b,c,float(d),e,out])
+#         print(execute_proc)
+        if(out.getvalue()==0.0):
+            print("----------Value inserted successfully----------")
+            return True
+        else:
+#             print(out.getvalue())
+            print("=====Invalid Name or Password or you have not entered any skill=====")
+            print("--------------------------------------------------------------------")
+            return False
+    except:
+        raise invalidlogin()
+
+               
+    finally:
+        cur.close()
+        con.commit()
+        con.close()   
+
+# insert_applicant(122, "aafgfhsd", "sdafghfgs@1212", "ASdas", 29.5, "ASdaa") 
+def get_details(id1):
+    
+    con=DBConnectivity.create_connection()
+    cur=DBConnectivity.create_cursor(con)
+    
+    cur.execute("select name,skill,exp,tech from applicant where id="+str(id1))
+#     print("hello")
+    for name,skill,exp,tech in cur:
+#         print("dbms")
+        appl=applicant()
+        appl.set_name(name)
+        appl.set_skill(skill)
+        appl.set_exp(exp)
+        appl.set_tech(tech)
+    return appl
+    
+    cur.close()       
+    con.close()
+########################################################################################################################################
+
+from utility import DBConnectivity
+from classes.applicant import applicant
+# 
+# def get_name(id1):
+#     try:
+#         con=DBConnectivity.create_connection()
+#         cur=DBConnectivity.create_cursor(con)
+#         
+#         cur.execute("select name from applicant where id="+str(id1))
+#         for a in cur:
+#             return a[0]
+#         
+#         
+#     finally:
+#         cur.close()
+#         con.close()
+
+def update(id2,name2,skill2,exp2):
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        if(name2!=""):        
+            print("--------------------name is updated successfully--------------------")
+            cur.execute("update applicant set name=:name1 where id=:id1",{"name1":name2,"id1":id2})
+        if(skill2!=""):
+            
+            print("--------------------skill is updated successfully-------------------")
+            cur.execute("select skill from applicant where id=:id1",{"id1":id2})
+            string=""
+            for skillset in cur:
+                if(len(skillset[0])==0):
+                    string=skill2
+                else:
+                    string=skillset[0]+','+skill2
+            cur.execute("update applicant set skill=:skill1 where id=:id1",{"skill1":string,"id1":id2})
+        if(exp2!=""):
+            if(exp2.isdigit()):
+                print("-----------------experience is updated successfully-----------------")
+                exper=float(exp2)
+                cur.execute("update applicant set exp=:exp1 where id=:id1",{"exp1":exper,"id1":id2}) 
+            
+        if(name2=="" and skill2=="" and exp2==""):
+            print("\n-----------------All values are Null nothing updated----------------")
+        else: 
+#         cur.execute("update applicant set name=:name1,skill=:skill1,exp=:exp1 where id=:id1",{"id1":id2,"name1":name2,"skill1":skill2,"exp1":exp2})
+            print("----------------All Details are updated Successfully----------------")
+        
+            
+        
+    finally:
+        cur.close()
+        con.commit()
+        con.close()
+        
+def get_data(id1):
+    
+    try:
+        list1=[]
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        cur.execute("select name,skill,exp from applicant where id="+str(id1))
+        for row in cur:
+            appl=applicant()
+            appl.set_name(row[0])
+            appl.set_skill(row[1])
+            appl.set_exp(row[2])
+            
+#             list1.append(row[0])
+#             list1.append(row[1])
+#             list1.append(row[2])
+        return appl
+    
+#     except Exception:
+#         print("Exception")
+    finally:
+        cur.close()
+        con.close()
+###################################################################################################################################
+
+from utility import DBConnectivity
+def get_count_applyjob(id1):
+    try:
+        #print(x)
+        con=DBConnectivity.create_connection()
+        #print(con)
+        cur=DBConnectivity.create_cursor(con)
+        
+        '''
+        The following part of the code will count and return the no of rows as well as print the rows for the given applicant id
+        '''
+        count1=0
+        print("jobid   jobname       status")
+        print("----------------------------")
+        cur.execute("select sjobid,jobname,status from status inner join job on jobid=sjobid where sid=:s_id and status<>:sts",{"s_id":id1,"sts":'accepted'})
+        for sjobid,jobname,status in cur:
+            
+            print(sjobid,"  ",jobname,"  ",status) 
+            count1+=1
+        print("----------------------------")
+        return count1
+    finally:
+        cur.close()
+        con.close()
+
+def get_count_selected(id1):
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        count2=0
+        cur.execute("select status from status inner join job on jobid=sjobid where sid=:s_id and status=:sts",{"s_id":id1,"sts":'selected'})
+        for status in cur:
+            if status[0]=='selected':
+                count2+=1
+        return count2
+    finally:
+        cur.close()
+        con.close()
+        
+def get_count_validjobid(j_id):
+    '''
+    This method will search for the given jobid and return the count for the same.
+    '''
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        count3=0
+        cur.execute("select sjobid from status where sjobid=:sj",{"sj":j_id})
+        for sjobid in cur:
+            count3+=1
+            
+        return count3
+    finally:
+        cur.close()
+        con.close()
+        
+def get_status(j_id):
+    
+    '''
+    This method will match the status of the given jobid with the status 'selected' and return
+    '''
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        
+        cur.execute("select status from status where sjobid=:sj",{"sj":j_id})
+        for status1 in cur:
+            return status1[0]
+    finally:
+        cur.close()
+        con.close()
+        
+        
+        
+def update_status(id1,j_id):
+    '''
+    This method will update the status of the given jobid to 'accepted' and commit the database. 
+    '''
+    try:
+        con=DBConnectivity.create_connection()
+        cur=DBConnectivity.create_cursor(con)
+        cur.execute("update status set status=:Ac where sid=:id and sjobid=:sj",{"id":id1,"sj":j_id,"Ac":'accepted'})
+        return True
+    finally:
+        cur.close()
+        con.commit()
+        con.close() 
+        
+        
+        
+"""print('begin')        
+x=get_count_applyjob(103)
+print('end')"""
+
+
+    
+    
